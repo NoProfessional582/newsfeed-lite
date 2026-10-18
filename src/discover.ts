@@ -64,7 +64,14 @@ export async function discover(sourceUrl: string): Promise<Discovery> {
   // 2. Advertised feeds.
   const alternates = [...document.querySelectorAll('link[rel~="alternate"]')]
     .filter((l) => /(rss|atom)\+xml/i.test(l.getAttribute("type") ?? ""))
-    .map((l) => ({ href: new URL(l.getAttribute("href") ?? "", res.url).href, title: l.getAttribute("title") ?? "" }))
+    .flatMap((l) => {
+      // One malformed href shouldn't stop discovery; skip it and try the others.
+      try {
+        return [{ href: new URL(l.getAttribute("href") ?? "", res.url).href, title: l.getAttribute("title") ?? "" }];
+      } catch {
+        return [];
+      }
+    })
     .filter((l) => !/comment/i.test(l.href + l.title));
 
   const scoped = (href: string) => topicPath !== "" && new URL(href).pathname.startsWith(topicPath);
