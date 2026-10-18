@@ -11,6 +11,7 @@ import { embedPending } from "./embed.ts";
 import { forYou, profile } from "./recommend.ts";
 import { search } from "./search.ts";
 import { CursorExpiredError } from "./snapshots.ts";
+import { ParamError, parseLimit, parseSince } from "./params.ts";
 
 const app = new Hono();
 
@@ -52,12 +53,16 @@ app.use("*", async (c, next) => {
 app.get("/api/articles", async (c) => {
   const source = Number(c.req.query("source")) || undefined;
   const q = c.req.query("q")?.trim() || undefined;
-  const limit = Math.min(Number(c.req.query("limit")) || 60, 200);
+  let limit: number, since: string | undefined;
+  try {
+    limit = parseLimit(c.req.query("limit"));
+    since = parseSince(c.req.query("days"));
+  } catch (e) {
+    if (e instanceof ParamError) return c.json({ error: e.message }, 400);
+    throw e;
+  }
   // `after` is the `next` cursor from the previous page; its shape depends on the view.
   const after = c.req.query("after") || undefined;
-  // `days` is a rolling window ending now; anything missing or non-positive means no date limit.
-  const days = Number(c.req.query("days"));
-  const since = days > 0 ? new Date(Date.now() - days * 86_400_000).toISOString() : undefined;
   const sort = c.req.query("sort") === "oldest" ? ("oldest" as const) : ("newest" as const);
   const view = c.req.query("view");
   const filter = { source, since, limit, unread: c.req.query("unread") === "1", saved: view === "saved" };

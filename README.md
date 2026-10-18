@@ -131,7 +131,9 @@ The weights are fixed by hand for now. They're constants at the top of `src/reco
 ### API
 
 - `GET /api/articles`: `view` (`latest`, `foryou` or `saved`), `q`, `source`, `days`, `unread=1`,
-  `sort` (`newest`/`oldest`) and `limit`. Pages are cursor-based: pass the response's `next` back as
+  `sort` (`newest`/`oldest`) and `limit` (1-200, default 60; larger values are capped). `days` counts
+  back from now (0 or less means no limit; above 3650 counts as 3650). A `limit` that
+  isn't a whole number from 1 up, or a `days` that isn't a number, gets HTTP 400. Pages are cursor-based: pass the response's `next` back as
   `after` to get the following page (`next` is null on the last one). Hiding an article between pages
   doesn't shift what comes next. Each row has `coverage`, the other sites' reports of its story.
 - With `view=foryou`, each row also has `score` and `reason`, and the response includes `coldStart`
