@@ -1,6 +1,7 @@
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { lookup as dnsLookup, type LookupAddress } from "node:dns";
+import { BlockList, isIP, type LookupFunction } from "node:net";
 import robotsParserModule from "robots-parser";
+import { Agent, fetch, type Response } from "undici";
 import { config } from "./config.ts";
 
 export const LIMITS = {
@@ -113,30 +114,45 @@ function noteBackoff(host: string, status: number, retryAfter: string | null): v
 // Article and image URLs come from third-party feeds, so a hostile feed could point
 // the crawler at the LAN (router admin pages, the Hyper-V VMs). Refuse private targets.
 
-function isPrivate(ip: string): boolean {
-  if (ip.startsWith("::ffff:")) ip = ip.slice(7);
-  if (isIP(ip) === 4) {
-    const [a, b] = ip.split(".").map(Number);
-    return (
-      a === 0 || a === 10 || a === 127 || a >= 224 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168)
-    );
-  }
-  const v6 = ip.toLowerCase();
-  return v6 === "::" || v6 === "::1" || /^(fc|fd|fe[89ab])/.test(v6);
+// BlockList also matches IPv4-mapped IPv6 (::ffff:7f00:1, as URL literals serialize) against the IPv4 rules.
+const blocked = new BlockList();
+for (const [net, bits] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
+  ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 3],
+] as const) blocked.addSubnet(net, bits, "ipv4");
+for (const [net, bits] of [
+  ["::", 128], ["::1", 128], ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
+] as const) blocked.addSubnet(net, bits, "ipv6");
+
+export function isPrivate(ip: string): boolean {
+  const family = isIP(ip);
+  return family === 0 || blocked.check(ip, family === 4 ? "ipv4" : "ipv6");
 }
 
-async function assertPublic(url: URL): Promise<void> {
+/** Refuses non-HTTP schemes and private IP literals. Hostnames are checked at connect time. */
+function assertPublic(url: URL): void {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new FetchError(`refusing ${url.protocol} URL`);
   }
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  const addrs = isIP(host) ? [host] : (await lookup(host, { all: true })).map((a) => a.address);
-  if (addrs.some(isPrivate)) throw new FetchError(`refusing private address for ${host}`);
+  if (isIP(host) && isPrivate(host)) throw new FetchError(`refusing private address ${host}`);
 }
+
+// Checking DNS before fetch() and letting fetch resolve again would leave a rebinding window, so
+// the check runs inside the connection's own lookup: the address checked is the one connected to.
+const publicLookup: LookupFunction = (hostname, options, callback) => {
+  dnsLookup(hostname, { ...options, all: true }, (err, addrs) => {
+    if (err) return callback(err, "", 0);
+    const list = addrs as LookupAddress[];
+    if (!list.length || list.some((a) => isPrivate(a.address))) {
+      return callback(new FetchError(`refusing private address for ${hostname}`), "", 0);
+    }
+    if (options.all) return (callback as unknown as (e: null, a: LookupAddress[]) => void)(null, list);
+    callback(null, list[0].address, list[0].family);
+  });
+};
+
+const dispatcher = new Agent({ connect: { lookup: publicLookup } });
 
 // ─── robots.txt ─────────────────────────────────────────────────────────────
 
@@ -147,19 +163,43 @@ interface Robots {
 }
 const robotsParser = robotsParserModule as unknown as (url: string, body: string) => Robots;
 
-const robotsCache = new Map<string, Promise<Robots | null>>();
+const ROBOTS_TTL_MS = 24 * 3_600_000;
+const ROBOTS_RETRY_MS = 10 * 60_000;
+
+/** A parsed file, null for "no rules" (missing file), or the error that kept us from reading it. */
+type RobotsResult = Robots | null | FetchError;
+const robotsCache = new Map<string, { expires: number; result: Promise<RobotsResult> }>();
+
+// RFC 9309: a missing file (4xx) means no rules, but an unreachable one (5xx, 429, network error)
+// means we can't know the rules, so the request waits for a later run instead of going ahead.
+async function fetchRobots(origin: string): Promise<{ result: RobotsResult; ttl: number }> {
+  const robotsUrl = `${origin}/robots.txt`;
+  try {
+    const r = await rawGet(robotsUrl, 500_000);
+    if (r.status === 429 || r.status >= 500) {
+      return { result: new FetchError(`robots.txt unavailable (HTTP ${r.status}) for ${origin}`, true), ttl: ROBOTS_RETRY_MS };
+    }
+    return { result: r.status < 400 ? robotsParser(robotsUrl, r.text()) : null, ttl: ROBOTS_TTL_MS };
+  } catch (e) {
+    if (e instanceof FetchError && e.temporary) return { result: e, ttl: ROBOTS_RETRY_MS };
+    return { result: null, ttl: ROBOTS_TTL_MS }; // e.g. an oversized file: treat as no rules
+  }
+}
 
 async function allowedByRobots(url: URL): Promise<boolean> {
   if (!config.respectRobots) return true;
   let entry = robotsCache.get(url.origin);
-  if (!entry) {
-    const robotsUrl = `${url.origin}/robots.txt`;
-    entry = rawGet(robotsUrl, 500_000)
-      .then((r) => (r.status < 400 ? robotsParser(robotsUrl, r.text()) : null))
-      .catch(() => null);
-    robotsCache.set(url.origin, entry);
+  if (!entry || entry.expires < Date.now()) {
+    const pending = fetchRobots(url.origin);
+    const created: { expires: number; result: Promise<RobotsResult> } = {
+      expires: Infinity, // until the fetch settles and sets the real expiry
+      result: pending.then((p) => p.result),
+    };
+    void pending.then((p) => (created.expires = Date.now() + p.ttl));
+    robotsCache.set(url.origin, (entry = created));
   }
-  const robots = await entry;
+  const robots = await entry.result;
+  if (robots instanceof FetchError) throw robots;
   return robots?.isAllowed(url.href, config.userAgent) ?? true;
 }
 
@@ -184,7 +224,7 @@ async function readCapped(res: Response, maxBytes: number): Promise<Buffer> {
 async function rawGet(href: string, maxBytes: number, accept?: string): Promise<FetchResult> {
   let url = new URL(href);
   for (let hop = 0; hop <= LIMITS.maxRedirects; hop++) {
-    await assertPublic(url);
+    assertPublic(url);
     checkHost(url.host);
     // Wait for the host first, then take a slot: a request queued behind a slow host must
     // neither hold a slot other hosts could use nor burn its timeout while waiting.
@@ -195,6 +235,8 @@ async function rawGet(href: string, maxBytes: number, accept?: string): Promise<
     try {
       const result = await fetchOnce(url, maxBytes, accept).catch((e: unknown) => {
         if (e instanceof FetchError) throw e;
+        // fetch() wraps errors from the connection, including publicLookup's refusal, in a TypeError.
+        if (e instanceof Error && e.cause instanceof FetchError) throw e.cause;
         // Timeouts, resets, DNS hiccups: transient, not a sign the URL is wrong.
         throw new FetchError(`${e instanceof Error ? e.message : String(e)} (${url.href})`, true);
       });
@@ -215,6 +257,7 @@ async function fetchOnce(url: URL, maxBytes: number, accept?: string): Promise<F
   const res = await fetch(url, {
     redirect: "manual",
     signal,
+    dispatcher,
     headers: {
       "User-Agent": config.userAgent,
       Accept: accept ?? "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

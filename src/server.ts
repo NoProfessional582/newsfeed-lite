@@ -12,17 +12,40 @@ import { forYou } from "./recommend.ts";
 
 const app = new Hono();
 
+// Listening on 127.0.0.1 keeps the LAN out, but not other sites open in your browser.
+// - Host: a DNS-rebinding page reaches us under its own hostname, so only loopback names pass.
+// - Origin: a cross-site form or no-cors fetch carries the other site's origin.
+// - Content-Type: requiring JSON forces a CORS preflight, which we never answer, on any cross-site write.
+const allowedHosts = new Set([`localhost:${config.port}`, `127.0.0.1:${config.port}`, `[::1]:${config.port}`]);
+app.use("*", async (c, next) => {
+  if (!allowedHosts.has(c.req.header("host") ?? "")) return c.text("Forbidden host", 403);
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+    const origin = c.req.header("origin");
+    if (origin && !allowedHosts.has(origin.replace(/^https?:\/\//, ""))) return c.json({ error: "Cross-origin request refused" }, 403);
+    const hasBody = c.req.method === "POST" || c.req.method === "PATCH";
+    if (hasBody && !/^application\/json\b/i.test(c.req.header("content-type") ?? "")) {
+      return c.json({ error: "Expected application/json" }, 415);
+    }
+  }
+  await next();
+});
+
 app.get("/api/articles", (c) => {
   const source = Number(c.req.query("source")) || undefined;
   const q = c.req.query("q")?.trim() || undefined;
   const limit = Math.min(Number(c.req.query("limit")) || 60, 200);
-  const offset = Math.max(Number(c.req.query("offset")) || 0, 0);
+  // `after` is the `next` cursor from the previous page; its shape depends on the view.
+  const after = c.req.query("after") || undefined;
   // `days` is a rolling window ending now; anything missing or non-positive means no date limit.
   const days = Number(c.req.query("days"));
   const since = days > 0 ? new Date(Date.now() - days * 86_400_000).toISOString() : undefined;
   const sort = c.req.query("sort") === "oldest" ? ("oldest" as const) : ("newest" as const);
-  const query = { source, q, since, sort, limit, offset };
-  return c.json(c.req.query("view") === "foryou" ? forYou(query) : store.listArticles(query));
+  const filter = { source, q, since, limit };
+  return c.json(
+    c.req.query("view") === "foryou"
+      ? forYou({ ...filter, after })
+      : store.listArticles({ ...filter, sort, after: after ? store.parseKeyset(after) : undefined }),
+  );
 });
 
 app.post("/api/articles/:id/feedback", async (c) => {
@@ -61,7 +84,8 @@ app.post("/api/sources", async (c) => {
 
 app.patch("/api/sources/:id", async (c) => {
   const id = Number(c.req.param("id"));
-  const body = await c.req.json<{ enabled?: boolean; title?: string }>();
+  type Body = { enabled?: unknown; title?: unknown };
+  const body = await c.req.json<Body>().catch((): Body => ({}));
   const fields: Partial<store.Source> = {};
   if (typeof body.enabled === "boolean") fields.enabled = body.enabled ? 1 : 0;
   if (typeof body.title === "string") fields.title = body.title.trim() || null;

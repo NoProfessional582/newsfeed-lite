@@ -48,7 +48,9 @@ headless run, for example from a Windows scheduled task, use `npm run crawl`.
 - **Highlight:** the feed summary or `og:description`, whichever is longer, if it's substantial (250+ characters). 
   Otherwise the first three paragraphs that Readability extracts. Trimmed to about 400 characters on
   a sentence boundary.
-- **Dedup:** by canonical URL.
+- **Dedup:** by canonical URL. Every URL that led to a stored article, the feed link as well as the
+  canonical URL, is remembered in `seen_urls`, so it isn't fetched again and doesn't return as new
+  after pruning. A URL is forgotten once it hasn't appeared in a crawl for `retentionDays`.
 
 ## For you
 
@@ -98,8 +100,12 @@ To reset your profile, stop the server and run
 
 ### API
 
+- `GET /api/articles`: `q`, `source`, `days`, `sort` (`newest`/`oldest`) and `limit`. Pages are
+  cursor-based: pass the response's `next` back as `after` to get the following page (`next` is null
+  on the last one). Hiding an article between pages doesn't shift what comes next.
 - `GET /api/articles?view=foryou`: same parameters as the normal list. Each row also has `score`
-  and `reason`, and the response includes `coldStart` and `reactions`.
+  and `reason`, and the response includes `coldStart` and `reactions`. The first page ranks once and
+  later pages read that ranking for 30 minutes, so reacting while you scroll doesn't reshuffle them.
 - `POST /api/articles/:id/feedback`: a JSON body with any of `rating` (-1, 0 or 1), `hidden`
   (boolean) or `click: true`.
 
@@ -127,14 +133,18 @@ To reset your profile, stop the server and run
 | `perHostDelayMs` | 1000 | Minimum gap between requests to the same host |
 | `maxRequestsPerHostPerRun` | 100 | Most requests one crawl run sends to one host, including images |
 | `timeoutMs` | 15000 | Per-request timeout |
-| `respectRobots` | true | Skip URLs that robots.txt disallows |
+| `respectRobots` | true | Skip URLs that robots.txt disallows. The file is cached for 24 hours. If it can't be fetched (5xx, 429, timeout), that host waits for a later run |
 | `userAgent` | … | The User-Agent header sent with requests |
 
 ## Safety
 
 - There's no authentication, so the server listens on localhost only.
+- Being on localhost doesn't stop other sites open in your browser from calling the API. The server
+  rejects any `Host` that isn't a loopback name (DNS rebinding), cross-site `Origin`s, and writes
+  that aren't `application/json`.
 - URLs come from third-party feeds, so the fetcher refuses private and loopback addresses on every
-  redirect hop. That keeps a hostile feed from probing your LAN.
+  redirect hop. The check runs inside the connection's DNS lookup, so the address checked is the
+  address connected to, and it covers IPv4-mapped IPv6 forms. That keeps a hostile feed from probing your LAN.
 - Responses are size-capped (5 MB pages, 10 MB feeds, 8 MB images), and images over 40 MP are
   rejected before they're decoded.
 

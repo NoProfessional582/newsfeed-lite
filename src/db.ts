@@ -87,6 +87,17 @@ db.exec(`
     embedding    BLOB,
     updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
+
+  -- Every URL a crawl has stored an article under: canonical URLs and the feed or page links that led
+  -- to them. Checking it first means a link whose canonical differs isn't refetched every run, and it
+  -- outlives article pruning so an old link still on a feed or page isn't ingested again as new.
+  -- seen_at moves forward whenever the link shows up again; rows not seen for retentionDays are pruned.
+  CREATE TABLE IF NOT EXISTS seen_urls (
+    url       TEXT PRIMARY KEY,
+    source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE,
+    seen_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  );
+  INSERT OR IGNORE INTO seen_urls (url, source_id) SELECT url, source_id FROM articles;
 `);
 
 // Columns added after the first release.
@@ -136,8 +147,18 @@ export function deleteSource(id: number): string[] {
 
 // ─── Articles ───────────────────────────────────────────────────────────────
 
-export function articleExists(url: string): boolean {
-  return db.prepare(`SELECT 1 FROM articles WHERE url = ?`).get(url) !== undefined;
+const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
+
+/** True if a crawl has seen this URL before. Also marks it as seen again, so it isn't pruned. */
+export function touchSeen(url: string): boolean {
+  return db.prepare(`UPDATE seen_urls SET seen_at = ${NOW} WHERE url = ?`).run(url).changes > 0;
+}
+
+export function markSeen(urls: string[], sourceId: number): void {
+  const stmt = db.prepare(
+    `INSERT INTO seen_urls (url, source_id) VALUES (?, ?) ON CONFLICT(url) DO UPDATE SET seen_at = ${NOW}`,
+  );
+  for (const url of new Set(urls)) stmt.run(url, sourceId);
 }
 
 export function insertArticle(a: NewArticle): boolean {
@@ -157,7 +178,17 @@ export interface ArticleQuery {
   since?: string;
   sort?: "newest" | "oldest";
   limit: number;
-  offset: number;
+  /** Keyset cursor: continue after the row with this sort key and id. An offset would skip a row
+   *  for every article hidden since the previous page, since hidden rows leave the result set. */
+  after?: { key: string; id: number };
+}
+
+const SORT_KEY = `coalesce(a.published_at, a.fetched_at)`;
+
+/** Parses the "<sort key>|<id>" cursor that listArticles returns as `next`. */
+export function parseKeyset(s: string): ArticleQuery["after"] {
+  const m = /^(.+)\|(\d+)$/.exec(s);
+  return m ? { key: m[1], id: Number(m[2]) } : undefined;
 }
 
 type ArticleFilter = Pick<ArticleQuery, "source" | "q" | "since">;
@@ -171,8 +202,10 @@ function articleFilter({ source, q, since }: ArticleFilter) {
     params.push(source);
   }
   if (q) {
-    where.push(`(a.title LIKE ? OR a.excerpt LIKE ?)`);
-    params.push(`%${q}%`, `%${q}%`);
+    // Escape LIKE's wildcards so a search for "100%" or "file_name" matches literally.
+    const pattern = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
+    where.push(`(a.title LIKE ? ESCAPE '\\' OR a.excerpt LIKE ? ESCAPE '\\')`);
+    params.push(pattern, pattern);
   }
   // Both columns hold toISOString() output, so string order is time order.
   if (since) {
@@ -188,18 +221,21 @@ const ARTICLE_COLUMNS = `a.id, a.source_id, a.url, a.title, a.excerpt, a.image_p
   coalesce(f.rating, 0) AS rating`;
 const ARTICLE_JOINS = `FROM articles a JOIN sources s ON s.id = a.source_id LEFT JOIN feedback f ON f.url = a.url`;
 
-export function listArticles({ source, q, since, sort, limit, offset }: ArticleQuery) {
+export function listArticles({ source, q, since, sort, limit, after }: ArticleQuery) {
   const { clause, params } = articleFilter({ source, q, since });
   const total = (db.prepare(`SELECT count(*) AS n ${ARTICLE_JOINS} ${clause}`).get(...params) as { n: number }).n;
-  const dir = sort === "oldest" ? "ASC" : "DESC";
+  const [dir, cmp] = sort === "oldest" ? ["ASC", ">"] : ["DESC", "<"];
+  const page = after ? ` AND (${SORT_KEY} ${cmp} ? OR (${SORT_KEY} = ? AND a.id ${cmp} ?))` : "";
   const rows = db
     .prepare(
-      `SELECT ${ARTICLE_COLUMNS} ${ARTICLE_JOINS} ${clause}
-       ORDER BY coalesce(a.published_at, a.fetched_at) ${dir}, a.id ${dir}
-       LIMIT ? OFFSET ?`,
+      `SELECT ${ARTICLE_COLUMNS}, ${SORT_KEY} AS sort_key ${ARTICLE_JOINS} ${clause}${page}
+       ORDER BY ${SORT_KEY} ${dir}, a.id ${dir}
+       LIMIT ?`,
     )
-    .all(...params, limit, offset);
-  return { total, rows };
+    .all(...params, ...(after ? [after.key, after.key, after.id] : []), limit) as unknown as (Article & { sort_key: string })[];
+  const last = rows.at(-1);
+  const next = rows.length === limit && last ? `${last.sort_key}|${last.id}` : null;
+  return { total, rows: rows.map(({ sort_key: _k, ...r }) => r), next };
 }
 
 export type ArticleRow = Article & {
@@ -308,5 +344,7 @@ export function pruneArticles(retentionDays: number): string[] {
   const where = `fetched_at < ?`;
   const images = imagePathsWhere(where, cutoff);
   db.prepare(`DELETE FROM articles WHERE ${where}`).run(cutoff);
+  // A kept article was fetched after the cutoff, so its own URLs were seen after it too.
+  db.prepare(`DELETE FROM seen_urls WHERE seen_at < ?`).run(cutoff);
   return images;
 }

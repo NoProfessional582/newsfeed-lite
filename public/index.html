@@ -318,7 +318,8 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const PAGE = 60;
-let offset = 0, total = 0, sources = [], wasRunning = false;
+// `next` is the server's cursor for the following page; `offset` only counts loaded cards for bento tile sizes.
+let offset = 0, next = null, total = 0, sources = [], wasRunning = false, loadSeq = 0;
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -405,14 +406,20 @@ const feedback = (id, body) =>
   fetch(`/api/articles/${id}/feedback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
 async function loadArticles(append = false) {
-  if (!append) offset = 0;
-  const params = new URLSearchParams({ limit: PAGE, offset, view });
+  if (append && !next) return;
+  const params = new URLSearchParams({ limit: PAGE, view });
+  if (append) params.set("after", next);
   if ($("q").value.trim()) params.set("q", $("q").value.trim());
   if ($("source").value) params.set("source", $("source").value);
   if ($("days").value) params.set("days", $("days").value);
   if (view === "latest") params.set("sort", sort);
-  const { total: t, rows, coldStart, reactions } = await (await fetch(`/api/articles?${params}`)).json();
+  // A filter change or crawl reload can overlap a Load more; only the latest request may render.
+  const seq = ++loadSeq;
+  const { total: t, rows, next: n, coldStart, reactions } = await (await fetch(`/api/articles?${params}`)).json();
+  if (seq !== loadSeq) return;
+  if (!append) offset = 0;
   total = t;
+  next = n;
   $("notice").hidden = !coldStart;
   if (coldStart) {
     const need = 3 - reactions;
@@ -421,7 +428,7 @@ async function loadArticles(append = false) {
   const html = rows.map((a, i) => card(a, offset + i)).join("");
   if (append) $("grid").insertAdjacentHTML("beforeend", html); else $("grid").innerHTML = html;
   offset += rows.length;
-  $("more").hidden = offset >= total;
+  $("more").hidden = !next;
   const empty = !append && rows.length === 0;
   $("empty").hidden = !empty;
   $("grid").hidden = empty;
@@ -572,7 +579,7 @@ $("grid").addEventListener("click", async (e) => {
   }
 });
 $("refresh").addEventListener("click", async () => {
-  await fetch("/api/crawl", { method: "POST" });
+  await fetch("/api/crawl", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   wasRunning = true;
   $("refresh").disabled = true;
   setTimeout(pollStatus, 500);

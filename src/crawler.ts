@@ -28,13 +28,16 @@ export async function discoverSource(source: Source): Promise<Source> {
 }
 
 async function ingest(source: Source, url: string, item?: FeedItem): Promise<boolean> {
-  if (store.articleExists(url)) return false;
+  if (store.touchSeen(url)) return false;
   const preview = await extractPreview(url, item);
   if (!preview) return false;
-  if (preview.url !== url && store.articleExists(preview.url)) return false;
+  if (preview.url !== url && store.touchSeen(preview.url)) {
+    store.markSeen([url], source.id); // so the next run skips this link without fetching it
+    return false;
+  }
 
   const image = preview.imageUrl ? await saveThumbnail(preview.imageUrl, preview.url) : null;
-  return store.insertArticle({
+  const added = store.insertArticle({
     source_id: source.id,
     url: preview.url,
     title: preview.title.slice(0, 500),
@@ -45,6 +48,8 @@ async function ingest(source: Source, url: string, item?: FeedItem): Promise<boo
     published_at: preview.publishedAt,
     categories: preview.categories.length ? JSON.stringify(preview.categories) : null,
   });
+  store.markSeen([url, preview.url], source.id);
+  return added;
 }
 
 /** Crawls one source. Returns the number of new articles. Errors are recorded on the source. */

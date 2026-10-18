@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import * as store from "./db.ts";
-import type { ArticleQuery, ArticleRow, Feedback } from "./db.ts";
+import { parseKeyset, type ArticleQuery, type ArticleRow, type Feedback } from "./db.ts";
 
 // "For you" ranking. Each reaction is a point in embedding space with a weight; an article
 // scores by the weighted sentiment of its nearest reactions, so separate interests (say,
@@ -34,15 +35,40 @@ interface Ranked extends ArticleRow {
   reason: string | null;
 }
 
+// Ranking again for every page would let the order shift under the reader (a hide or 👍 on page one
+// re-ranks the rest), skipping or repeating articles. So the first page ranks once and stores the
+// order, and later pages slice that snapshot. The cursor is "<snapshot id>:<offset>".
+type RankedRow = Omit<Ranked, "embedding">;
+const SNAPSHOT_TTL_MS = 30 * 60_000;
+const MAX_SNAPSHOTS = 8;
+const snapshots = new Map<string, { rows: RankedRow[]; reactions: number; created: number }>();
+
+function page(id: string, rows: RankedRow[], reactions: number, offset: number, limit: number) {
+  const end = offset + limit;
+  const next = end < rows.length ? `${id}:${end}` : null;
+  return { total: rows.length, rows: rows.slice(offset, end), next, coldStart: false, reactions };
+}
+
+export type ForYouQuery = Omit<ArticleQuery, "after" | "sort"> & { after?: string };
+
 // The date range narrows the candidates; sort is ignored, since this view's order is the ranking.
-export function forYou({ source, q, since, limit, offset }: ArticleQuery) {
+export function forYou({ source, q, since, limit, after }: ForYouQuery) {
+  const cursor = after ? /^([\w-]+):(\d+)$/.exec(after) : null;
+  const snap = cursor ? snapshots.get(cursor[1]) : undefined;
+  if (cursor && snap && Date.now() - snap.created < SNAPSHOT_TTL_MS) {
+    return page(cursor[1], snap.rows, snap.reactions, Number(cursor[2]), limit);
+  }
+  // A "key|id" cursor comes from a cold-start page (the plain latest list), so keep paging that list.
+  const keyset = after ? parseKeyset(after) : undefined;
+
   const reactions = store
     .listFeedback()
     .map((f) => ({ ...f, w: weight(f) }))
     .filter((f) => f.w !== 0);
   const trained = reactions.filter((f) => f.embedding);
-  if (trained.length < MIN_REACTIONS) {
-    return { ...store.listArticles({ source, q, since, limit, offset }), coldStart: true, reactions: trained.length };
+  if (trained.length < MIN_REACTIONS || keyset) {
+    const latest = store.listArticles({ source, q, since, limit, after: keyset });
+    return { ...latest, coldStart: trained.length < MIN_REACTIONS, reactions: trained.length };
   }
 
   // Bayesian-ish source affinity: two phantom neutral votes keep one like from dominating.
@@ -108,6 +134,10 @@ export function forYou({ source, q, since, limit, offset }: ArticleQuery) {
     ordered.push(next);
   }
 
-  const rows = ordered.slice(offset, offset + limit).map(({ embedding: _e, support: _s, ...r }) => r);
-  return { total: ordered.length, rows, coldStart: false, reactions: trained.length };
+  const rows: RankedRow[] = ordered.map(({ embedding: _e, support: _s, ...r }) => r);
+  for (const [id, s] of snapshots) if (Date.now() - s.created >= SNAPSHOT_TTL_MS) snapshots.delete(id);
+  while (snapshots.size >= MAX_SNAPSHOTS) snapshots.delete(snapshots.keys().next().value!);
+  const id = randomUUID().slice(0, 8);
+  snapshots.set(id, { rows, reactions: trained.length, created: Date.now() });
+  return page(id, rows, trained.length, 0, limit);
 }
