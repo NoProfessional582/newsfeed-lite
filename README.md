@@ -54,6 +54,55 @@ as a mild 👍. After three reactions, the **For you** view ranks articles by wh
   about, so the feed keeps learning. The caption on each card says why it's there.
 - **Persistence:** reactions live in a `feedback` table with their own copy of the article's text and
   vector, so your profile survives the `retentionDays` pruning. Hidden articles drop out of both views.
+  Articles you've already rated, hidden or opened are left out of For you.
+
+### How reactions count
+
+| Reaction | Weight |
+|---|---|
+| 👍 | +1 |
+| 👎 | −1 |
+| Hide (with no thumb) | −0.6 |
+| Opened, not rated | +0.3 |
+
+A thumb overrides everything else. Pressing the same thumb again clears it.
+
+### Tuning
+
+The weights are fixed by hand for now. They're constants at the top of `src/recommend.ts`:
+
+| Constant | Value | Effect |
+|---|---|---|
+| `NEIGHBOURS` | 8 | How many of your nearest reactions vote on each article |
+| `SIM_FLOOR` | 0.2 | Similarity below this counts as unrelated. MiniLM scores unrelated news around 0.0–0.2 |
+| `SHRINK` | 0.3 | Pulls scores toward zero when the evidence is weak |
+| `SOURCE_WEIGHT` | 0.25 | Weight of the source-affinity term |
+| `RECENCY_WEIGHT` | 0.3 | Weight of the recency term |
+| `HALF_LIFE_DAYS` | 3 | How fast that recency boost decays |
+| `EXPLORE_EVERY` | 6 | Interval between exploration slots |
+| `MIN_REACTIONS` | 3 | Reactions needed before For you ranks anything. Below that it shows the latest |
+
+To reset your profile, stop the server and run
+`node -e "new (require('node:sqlite').DatabaseSync)('data/newsfeed.db').exec('DELETE FROM feedback')"`.
+
+### API
+
+- `GET /api/articles?view=foryou`: same parameters as the normal list. Each row also has `score`
+  and `reason`, and the response includes `coldStart` and `reactions`.
+- `POST /api/articles/:id/feedback`: a JSON body with any of `rating` (-1, 0 or 1), `hidden`
+  (boolean) or `click: true`.
+
+### Not built yet
+
+- **Learned weights:** a small logistic-regression model, trained on your own reactions, would replace
+  the hand-set constants above. It would use the embedding similarity, source and feed tags as
+  inputs. It's worth adding once there are about 50 reactions to learn from.
+- **Keyword fallback:** a model based on source, tags and title words, with no embeddings. It was
+  skipped because embeddings already work well with only a few reactions.
+- **Profile page:** a page showing what the ranking has learned, such as liked topics and source
+  affinities, with a way to edit it.
+- **Source suggestions:** suggest new sites to add based on what you 👍, using the existing feed
+  discovery.
 
 ## Config (`config.json`)
 
