@@ -365,6 +365,11 @@ export interface ClusterInput {
   embedding: Float32Array;
 }
 
+/** Whether any embedded article still waits for clustering. Reads no vectors. */
+export function hasUnclustered(): boolean {
+  return !!db.prepare(`SELECT 1 FROM articles WHERE clustered = 0 AND embedding IS NOT NULL LIMIT 1`).get();
+}
+
 /** Every embedded article, oldest first, so earlier arrivals become the leads. */
 export function clusterInputs(): ClusterInput[] {
   return (

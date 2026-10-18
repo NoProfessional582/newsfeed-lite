@@ -39,6 +39,8 @@ const dot = (a: Float32Array, b: Float32Array) => {
 
 /** Assigns every article that hasn't been considered yet to a story. Returns how many joined one. */
 export function clusterPending(): number {
+  // This runs after every 👍 or click, so check cheaply before loading every vector.
+  if (!store.hasUnclustered()) return 0;
   const all = store.clusterInputs();
   if (!all.some((a) => !a.clustered)) return 0;
 
