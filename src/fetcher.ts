@@ -70,6 +70,7 @@ const nextSlot = new Map<string, number>();
 /** Reserve the next free slot for a host so requests to it are at least perHostDelayMs apart. */
 async function hostTurn(host: string): Promise<void> {
   const now = Date.now();
+  if (nextSlot.size > 1000) pruneHostState(now); // between runs, e.g. many sources added at once
   const at = Math.max(now, nextSlot.get(host) ?? 0);
   nextSlot.set(host, at + config.perHostDelayMs);
   if (at > now) await new Promise((r) => setTimeout(r, at - now));
@@ -88,6 +89,23 @@ const requestsThisRun = new Map<string, number>();
 export function startRun(): void {
   throttledThisRun.clear();
   requestsThisRun.clear();
+  pruneHostState();
+}
+
+// Feeds and articles name new hosts all the time (images, link shorteners), so the per-host maps
+// drop entries that no longer say anything, and the robots.txt cache is capped.
+const ROBOTS_MAX = 500;
+
+/** Drops passed spacing slots and Retry-After deadlines, and expired robots.txt rules. */
+export function pruneHostState(now = Date.now()): void {
+  for (const [host, at] of nextSlot) if (at <= now) nextSlot.delete(host);
+  for (const [host, until] of blockedUntil) if (until <= now) blockedUntil.delete(host);
+  for (const [origin, entry] of robotsCache) if (entry.expires < now) robotsCache.delete(origin);
+}
+
+/** Entry counts of the per-host maps, for tests. */
+export function hostStateSizes() {
+  return { nextSlot: nextSlot.size, blockedUntil: blockedUntil.size, robots: robotsCache.size };
 }
 
 function checkHost(host: string): void {
@@ -204,6 +222,9 @@ async function allowedByRobots(url: URL): Promise<boolean> {
       result: pending.then((p) => p.result),
     };
     void pending.then((p) => (created.expires = Date.now() + p.ttl));
+    // Re-inserted last, so the cap drops the origins fetched longest ago first.
+    robotsCache.delete(url.origin);
+    while (robotsCache.size >= ROBOTS_MAX) robotsCache.delete(robotsCache.keys().next().value!);
     robotsCache.set(url.origin, (entry = created));
   }
   const robots = await entry.result;

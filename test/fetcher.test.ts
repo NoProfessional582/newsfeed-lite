@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { get, isPrivate, FetchError } from "../src/fetcher.ts";
+import { get, hostStateSizes, isPrivate, pruneHostState, FetchError } from "../src/fetcher.ts";
 
 test("isPrivate covers loopback, LAN and mapped forms", () => {
   for (const ip of ["127.0.0.1", "10.1.2.3", "192.168.1.10", "172.20.0.1", "169.254.1.1", "100.64.0.1",
@@ -17,4 +17,14 @@ test("get() refuses private targets by literal and by name", async () => {
   for (const url of ["http://[::ffff:127.0.0.1]:4600/", "http://[::ffff:7f00:1]/", "http://127.0.0.1/", "http://localhost:4600/"]) {
     await assert.rejects(get(url), (e) => e instanceof FetchError && /private/.test(e.message) && !e.temporary, url);
   }
+});
+
+test("pruneHostState drops spacing slots and robots.txt rules once they have passed", async () => {
+  await assert.rejects(get("http://localhost:4600/"), FetchError); // leaves a slot and a robots entry
+  const before = hostStateSizes();
+  assert.ok(before.nextSlot > 0 && before.robots > 0);
+  pruneHostState(Date.now());
+  assert.ok(hostStateSizes().robots > 0, "fresh robots.txt rules stay");
+  pruneHostState(Date.now() + 25 * 3_600_000);
+  assert.deepEqual(hostStateSizes(), { nextSlot: 0, blockedUntil: 0, robots: 0 });
 });
