@@ -34,14 +34,15 @@ interface Ranked extends ArticleRow {
   reason: string | null;
 }
 
-export function forYou({ source, q, limit, offset }: ArticleQuery) {
+// The date range narrows the candidates; sort is ignored, since this view's order is the ranking.
+export function forYou({ source, q, since, limit, offset }: ArticleQuery) {
   const reactions = store
     .listFeedback()
     .map((f) => ({ ...f, w: weight(f) }))
     .filter((f) => f.w !== 0);
   const trained = reactions.filter((f) => f.embedding);
   if (trained.length < MIN_REACTIONS) {
-    return { ...store.listArticles({ source, q, limit, offset }), coldStart: true, reactions: trained.length };
+    return { ...store.listArticles({ source, q, since, limit, offset }), coldStart: true, reactions: trained.length };
   }
 
   // Bayesian-ish source affinity: two phantom neutral votes keep one like from dominating.
@@ -61,7 +62,7 @@ export function forYou({ source, q, limit, offset }: ArticleQuery) {
   const now = Date.now();
   const seen = new Set(reactions.map((f) => f.url));
   const ranked: (Ranked & { support: number })[] = [];
-  for (const a of store.candidateArticles({ source, q })) {
+  for (const a of store.candidateArticles({ source, q, since })) {
     if (seen.has(a.url)) continue; // already rated, hidden or opened
 
     let rel = 0;

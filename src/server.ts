@@ -17,7 +17,11 @@ app.get("/api/articles", (c) => {
   const q = c.req.query("q")?.trim() || undefined;
   const limit = Math.min(Number(c.req.query("limit")) || 60, 200);
   const offset = Math.max(Number(c.req.query("offset")) || 0, 0);
-  const query = { source, q, limit, offset };
+  // `days` is a rolling window ending now; anything missing or non-positive means no date limit.
+  const days = Number(c.req.query("days"));
+  const since = days > 0 ? new Date(Date.now() - days * 86_400_000).toISOString() : undefined;
+  const sort = c.req.query("sort") === "oldest" ? ("oldest" as const) : ("newest" as const);
+  const query = { source, q, since, sort, limit, offset };
   return c.json(c.req.query("view") === "foryou" ? forYou(query) : store.listArticles(query));
 });
 

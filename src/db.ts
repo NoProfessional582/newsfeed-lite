@@ -153,12 +153,17 @@ export function insertArticle(a: NewArticle): boolean {
 export interface ArticleQuery {
   source?: number;
   q?: string;
+  /** ISO timestamp; only articles published (or, lacking a date, fetched) at or after it. */
+  since?: string;
+  sort?: "newest" | "oldest";
   limit: number;
   offset: number;
 }
 
+type ArticleFilter = Pick<ArticleQuery, "source" | "q" | "since">;
+
 /** Hidden articles are left out of every view. */
-function articleFilter({ source, q }: Pick<ArticleQuery, "source" | "q">) {
+function articleFilter({ source, q, since }: ArticleFilter) {
   const where = [`coalesce(f.hidden, 0) = 0`];
   const params: (string | number)[] = [];
   if (source) {
@@ -169,6 +174,11 @@ function articleFilter({ source, q }: Pick<ArticleQuery, "source" | "q">) {
     where.push(`(a.title LIKE ? OR a.excerpt LIKE ?)`);
     params.push(`%${q}%`, `%${q}%`);
   }
+  // Both columns hold toISOString() output, so string order is time order.
+  if (since) {
+    where.push(`coalesce(a.published_at, a.fetched_at) >= ?`);
+    params.push(since);
+  }
   return { clause: `WHERE ${where.join(" AND ")}`, params };
 }
 
@@ -178,13 +188,14 @@ const ARTICLE_COLUMNS = `a.id, a.source_id, a.url, a.title, a.excerpt, a.image_p
   coalesce(f.rating, 0) AS rating`;
 const ARTICLE_JOINS = `FROM articles a JOIN sources s ON s.id = a.source_id LEFT JOIN feedback f ON f.url = a.url`;
 
-export function listArticles({ source, q, limit, offset }: ArticleQuery) {
-  const { clause, params } = articleFilter({ source, q });
+export function listArticles({ source, q, since, sort, limit, offset }: ArticleQuery) {
+  const { clause, params } = articleFilter({ source, q, since });
   const total = (db.prepare(`SELECT count(*) AS n ${ARTICLE_JOINS} ${clause}`).get(...params) as { n: number }).n;
+  const dir = sort === "oldest" ? "ASC" : "DESC";
   const rows = db
     .prepare(
       `SELECT ${ARTICLE_COLUMNS} ${ARTICLE_JOINS} ${clause}
-       ORDER BY coalesce(a.published_at, a.fetched_at) DESC
+       ORDER BY coalesce(a.published_at, a.fetched_at) ${dir}, a.id ${dir}
        LIMIT ? OFFSET ?`,
     )
     .all(...params, limit, offset);
@@ -199,7 +210,7 @@ export type ArticleRow = Article & {
 };
 
 /** Every visible article matching the filters, with its embedding, for ranking. */
-export function candidateArticles(filter: Pick<ArticleQuery, "source" | "q">): ArticleRow[] {
+export function candidateArticles(filter: ArticleFilter): ArticleRow[] {
   const { clause, params } = articleFilter(filter);
   return (
     db

@@ -51,7 +51,9 @@
   .brand { font-family: var(--font-display); font-weight: 600; font-size: 23px; letter-spacing: -0.015em; margin-right: auto; display: flex; align-items: center; gap: 10px; }
   .brand em { color: var(--terracotta); font-weight: 500; }
   .brand svg { flex: none; }
-  .search { flex: 1 1 220px; max-width: 340px; }
+  /* Second header row: what's shown, as opposed to the navigation and actions above it. */
+  .filters { flex: 1 1 100%; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .search { flex: 1 1 220px; max-width: 460px; }
   input[type=search], input[type=url], select {
     width: 100%; padding: 8px 12px; border-radius: var(--radius-md); border: 1px solid var(--line); background: var(--panel); }
   select { width: auto; max-width: 220px; }
@@ -61,6 +63,10 @@
   .btn.primary { background: var(--terracotta); border-color: var(--terracotta); color: var(--on-primary); }
   .btn.primary:hover { background: var(--terracotta-dark); border-color: var(--terracotta-dark); }
   .btn:disabled { opacity: .6; cursor: progress; }
+  .btn.sort { display: inline-flex; align-items: center; gap: 6px; padding-inline: 10px 12px; }
+  .btn.sort[hidden] { display: none; }
+  .btn.sort svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform .15s; }
+  .btn.sort[data-sort="oldest"] svg { transform: scaleY(-1); }
   .status { width: 100%; max-width: 1440px; margin: 0 auto; padding: 0 20px 8px; color: var(--muted); font: 12px/1.5 var(--font-mono); }
 
   .seg { display: inline-flex; padding: 3px; border-radius: 11px; background: var(--soft); border: 1px solid var(--line); }
@@ -225,8 +231,8 @@
     .bar { padding: 10px 16px; }
     main { padding: 18px 16px 48px; }
     .status { padding: 0 16px 8px; }
-    .search { max-width: none; order: 5; flex-basis: 100%; }
-    select { max-width: 150px; }
+    .search { max-width: none; flex-basis: 100%; }
+    .filters select { flex: 1 1 0; max-width: none; min-width: 0; }
   }
 </style>
 </head>
@@ -246,10 +252,20 @@
       <button data-layout="grid" aria-pressed="false" aria-label="Grid layout" title="Grid"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></svg></button>
       <button data-layout="list" aria-pressed="false" aria-label="List layout" title="List"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="6" height="5" rx="1.5"/><rect x="3" y="15" width="6" height="5" rx="1.5"/><path d="M12 5.5h9M12 8h6M12 16.5h9M12 19h6"/></svg></button>
     </div>
-    <div class="search"><input id="q" type="search" placeholder="Search headlines and previews" aria-label="Search"></div>
-    <select id="source" aria-label="Filter by source"><option value="">All sources</option></select>
     <button class="btn" id="sourcesBtn">Sources</button>
     <button class="btn primary" id="refresh">Refresh</button>
+    <div class="filters" role="group" aria-label="Filters">
+      <div class="search"><input id="q" type="search" placeholder="Search headlines and previews" aria-label="Search"></div>
+      <select id="source" aria-label="Filter by source"><option value="">All sources</option></select>
+      <select id="days" aria-label="Filter by date">
+        <option value="">Any time</option>
+        <option value="1">Past 24 hours</option>
+        <option value="3">Past 3 days</option>
+        <option value="7">Past week</option>
+        <option value="14">Past 2 weeks</option>
+      </select>
+      <button class="btn sort" id="sort" aria-label="Sort by date: newest first" title="Sort by date"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4"/><path d="M14 6h7M14 11h5M14 16h3"/></svg><span>Newest</span></button>
+    </div>
   </div>
   <div class="status" id="status" aria-live="polite"></div>
 </header>
@@ -346,14 +362,24 @@ const ICON = {
   hide: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.73 5.08A10.74 10.74 0 0 1 21.94 11.65a1 1 0 0 1 0 .7 10.75 10.75 0 0 1-1.44 2.49"/><path d="M14.08 14.16a3 3 0 0 1-4.24-4.24"/><path d="M17.48 17.5a10.75 10.75 0 0 1-15.42-5.15 1 1 0 0 1 0-.7 10.75 10.75 0 0 1 4.45-5.14"/><path d="m2 2 20 20"/></svg>`,
 };
 
-let view = "latest", layout = "bento";
+let view = "latest", layout = "bento", sort = "newest";
 try { if (localStorage.getItem("view") === "foryou") view = "foryou"; } catch {}
+try { if (localStorage.getItem("sort") === "oldest") sort = "oldest"; } catch {}
+
+// For you is ordered by its ranking, so the date sort only shows in Latest. The date range applies to both.
+function syncSort() {
+  $("sort").hidden = view === "foryou";
+  $("sort").dataset.sort = sort;
+  $("sort").querySelector("span").textContent = sort === "oldest" ? "Oldest" : "Newest";
+  $("sort").setAttribute("aria-label", `Sort by date: ${sort} first`);
+}
 try { const l = localStorage.getItem("layout"); if (["bento", "grid", "list"].includes(l)) layout = l; } catch {}
 
 function setView(v) {
   view = v;
   try { localStorage.setItem("view", v); } catch {}
   for (const b of document.querySelectorAll(".views button")) b.setAttribute("aria-pressed", String(b.dataset.view === v));
+  syncSort();
   loadArticles();
 }
 
@@ -373,6 +399,8 @@ async function loadArticles(append = false) {
   const params = new URLSearchParams({ limit: PAGE, offset, view });
   if ($("q").value.trim()) params.set("q", $("q").value.trim());
   if ($("source").value) params.set("source", $("source").value);
+  if ($("days").value) params.set("days", $("days").value);
+  if (view === "latest") params.set("sort", sort);
   const { total: t, rows, coldStart, reactions } = await (await fetch(`/api/articles?${params}`)).json();
   total = t;
   $("notice").hidden = !coldStart;
@@ -390,7 +418,9 @@ async function loadArticles(append = false) {
   if (empty) {
     $("empty").textContent = sources.length === 0
       ? "No sources yet. Open Sources and add a site, topic page or feed URL."
-      : ($("q").value || $("source").value) ? "Nothing matches." : "No articles yet. Click Refresh to crawl your sources.";
+      : ($("q").value || $("source").value) ? "Nothing matches."
+      : $("days").value ? "Nothing in this date range. Try a wider one."
+      : "No articles yet. Click Refresh to crawl your sources.";
   }
 }
 
@@ -428,6 +458,14 @@ async function pollStatus() {
 let qTimer;
 $("q").addEventListener("input", () => { clearTimeout(qTimer); qTimer = setTimeout(() => loadArticles(), 250); });
 $("source").addEventListener("change", () => loadArticles());
+$("days").addEventListener("change", () => loadArticles());
+$("sort").addEventListener("click", () => {
+  sort = sort === "newest" ? "oldest" : "newest";
+  try { localStorage.setItem("sort", sort); } catch {}
+  syncSort();
+  loadArticles();
+});
+syncSort();
 $("more").addEventListener("click", () => loadArticles(true));
 for (const b of document.querySelectorAll(".views button")) b.addEventListener("click", () => setView(b.dataset.view));
 for (const b of document.querySelectorAll(".views button")) b.setAttribute("aria-pressed", String(b.dataset.view === view));
