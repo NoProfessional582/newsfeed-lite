@@ -185,10 +185,22 @@
   }
 
   /* ---------------------------------------------------------------- Toast, dialog */
-  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; gap: 12px; align-items: center;
-    padding: 10px 12px 10px 16px; border-radius: var(--radius-md); background: var(--ink); color: var(--paper); box-shadow: var(--shadow-lift); font-size: 14px; z-index: 10; }
-  .toast[hidden] { display: none; }
+  /* A popover, so it sits in the top layer above an open modal (the Sources dialog) instead of under its backdrop. */
+  .toast { position: fixed; inset: auto auto 24px 50%; transform: translateX(-50%); margin: 0; border: 0; display: flex; gap: 12px; align-items: center;
+    max-width: calc(100vw - 32px); padding: 10px 12px 10px 16px; border-radius: var(--radius-md); background: var(--ink); color: var(--paper);
+    box-shadow: var(--shadow-lift); font-size: 14px; }
+  .toast:not(:popover-open) { display: none; }
+  .toast.err { background: var(--danger); color: var(--on-primary); }
   .toast button { border: 0; background: none; color: inherit; font-weight: 700; cursor: pointer; padding: 4px 6px; text-decoration: underline; }
+  .toast button[hidden] { display: none; }
+
+  .confirm { width: min(440px, calc(100vw - 32px)); }
+  .confirm form { padding: 22px 24px 20px; }
+  .confirm h2 { margin: 0 0 8px; font-size: 22px; line-height: 1.2; overflow-wrap: anywhere; }
+  .confirm p { margin: 0; color: var(--muted); font-size: 14px; }
+  .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+  .btn.destructive { background: var(--danger); border-color: var(--danger); color: var(--on-primary); }
+  .btn.destructive:hover { background: color-mix(in oklab, var(--danger) 85%, var(--ink)); }
 
   dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 64px); border: 1px solid var(--line);
     border-radius: var(--radius); padding: 0; background: var(--panel); color: var(--ink); box-shadow: var(--shadow-lift); }
@@ -264,7 +276,18 @@
   </div>
 </dialog>
 
-<div class="toast" id="toast" role="status" hidden><span id="toastText"></span><button id="toastUndo">Undo</button></div>
+<dialog class="confirm" id="confirmDlg" aria-labelledby="confirmTitle" aria-describedby="confirmBody">
+  <form method="dialog">
+    <h2 id="confirmTitle"></h2>
+    <p id="confirmBody"></p>
+    <div class="confirm-actions">
+      <button class="btn" value="cancel" autofocus>Cancel</button>
+      <button class="btn destructive" value="ok" id="confirmOk">Remove</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" popover="manual"><span id="toastText"></span><button id="toastUndo">Undo</button></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -422,14 +445,42 @@ $("grid").addEventListener("click", logClick);
 $("grid").addEventListener("auxclick", logClick);
 
 let toastTimer, undoHide;
-function toast(text, undo) {
+const hideToast = () => { if ($("toast").matches(":popover-open")) $("toast").hidePopover(); };
+// Undo is optional; tone "err" paints it in the danger color.
+function toast(text, undo, tone) {
   $("toastText").textContent = text;
   undoHide = undo;
-  $("toast").hidden = false;
+  $("toastUndo").hidden = !undo;
+  $("toast").classList.toggle("err", tone === "err");
+  // Re-showing moves it to the top of the top layer, above whichever modal opened since.
+  hideToast();
+  $("toast").showPopover();
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => ($("toast").hidden = true), 6000);
+  toastTimer = setTimeout(hideToast, 6000);
 }
-$("toastUndo").addEventListener("click", () => { $("toast").hidden = true; undoHide?.(); });
+$("toastUndo").addEventListener("click", () => { hideToast(); undoHide?.(); });
+
+// In-page replacement for confirm(). Resolves true only when the confirm button was pressed;
+// Cancel, Escape and a click on the backdrop all resolve false. It settles from those inputs directly
+// rather than from the dialog's "close" event, which some embedded browsers never deliver.
+let settleAsk;
+function ask({ title, body, ok = "Remove" }) {
+  settleAsk?.(false);
+  $("confirmTitle").textContent = title;
+  $("confirmBody").textContent = body;
+  $("confirmOk").textContent = ok;
+  $("confirmDlg").showModal();
+  return new Promise((resolve) => (settleAsk = resolve));
+}
+function answer(yes) {
+  if ($("confirmDlg").open) $("confirmDlg").close();
+  const settle = settleAsk;
+  settleAsk = null;
+  settle?.(yes);
+}
+$("confirmDlg").addEventListener("submit", (e) => { e.preventDefault(); answer(e.submitter?.value === "ok"); });
+$("confirmDlg").addEventListener("cancel", (e) => { e.preventDefault(); answer(false); });
+$("confirmDlg").addEventListener("click", (e) => { if (e.target === e.currentTarget) answer(false); });
 
 $("grid").addEventListener("click", async (e) => {
   const btn = e.target.closest(".actions button");
@@ -487,8 +538,17 @@ $("srcList").addEventListener("click", async (e) => {
   const t = e.target.closest("button");
   if (!t) return;
   if (t.dataset.del) {
-    if (!confirm("Remove this source and its stored articles?")) return;
-    await fetch(`/api/sources/${t.dataset.del}`, { method: "DELETE" });
+    const s = sources.find((x) => String(x.id) === t.dataset.del);
+    const name = s ? s.title || host(s.url) : "this source";
+    const n = s?.article_count ?? 0;
+    const ok = await ask({
+      title: `Remove ${name}?`,
+      body: `${n ? `Its ${n} stored article${n === 1 ? "" : "s"} and their images will be deleted too. ` : ""}Your 👍 and 👎 history is kept, so For you won't forget what you liked.`,
+    });
+    if (!ok) return;
+    const r = await fetch(`/api/sources/${t.dataset.del}`, { method: "DELETE" });
+    if (r.ok) toast(`Removed ${name}.`);
+    else toast(`Couldn't remove ${name}. Try again.`, null, "err");
   } else if (t.dataset.toggle) {
     await fetch(`/api/sources/${t.dataset.toggle}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: t.dataset.enabled !== "1" }) });
   }
