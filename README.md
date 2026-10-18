@@ -158,8 +158,8 @@ The weights are fixed by hand for now. They're constants at the top of `src/reco
 `src/mcp.ts` is an MCP server for local agent harnesses such as Hermes Agent, Claude Code or
 Codex. Its `news_*` tools list articles in the latest, For you or Saved views, search, get one
 article, see sources and their health, and see what the ranking has learned. With write access
-an agent can also rate, save, hide and mark articles read, start a crawl, and add, pause or
-remove sources.
+(`NEWSFEED_MCP_ACCESS=write`, off by default) an agent can also rate, save, hide and mark
+articles read, start a crawl, and add, pause or remove sources.
 
 The MCP server runs over stdio and calls the newsfeed-lite server's API, so `npm start` must be
 running. For Hermes, add it to `~/.hermes/config.yaml` and run `/reload-mcp`:
@@ -170,7 +170,7 @@ mcp_servers:
     command: "node"   # or the full path, e.g. "C:\\Program Files\\nodejs\\node.exe"
     args: ["/path/to/newsfeed-lite/src/mcp.ts"]   # on Windows: "C:\\path\\to\\newsfeed-lite\\src\\mcp.ts"
     env:
-      NEWSFEED_MCP_ACCESS: "write"   # "read" offers only the news tools that look things up
+      NEWSFEED_MCP_ACCESS: "write"   # leave out for only the news tools that look things up
 ```
 
 Hermes names the tools `mcp_newsfeed_news_search` and so on.
@@ -178,10 +178,12 @@ Hermes names the tools `mcp_newsfeed_news_search` and so on.
 | Variable | Default | Meaning |
 |---|---|---|
 | `NEWSFEED_URL` | `http://127.0.0.1:<port>` | Where newsfeed-lite is running |
-| `NEWSFEED_MCP_ACCESS` | `write` | `read` turns off the news tools that change things |
+| `NEWSFEED_MCP_ACCESS` | read only | `write` turns on the news tools that change things; anything else, or unset, leaves them off |
 
-Article text comes from third-party sites, and the server tells agents to treat it as data, not
-instructions. `news_remove_source` deletes for good, and its description asks the agent to
+Article text comes from third-party sites, and an agent reading it could be steered by it, which
+is why writes are opt-in. Every string a website supplied (titles, URLs, excerpts, authors, tags,
+source names, crawl errors) sits inside a `third_party` object in tool results, and the server
+tells agents to treat those as data, not instructions. `news_remove_source` deletes for good, and its description asks the agent to
 confirm with you first. Hermes can also filter tools per server with `tools.include` /
 `tools.exclude`.
 
