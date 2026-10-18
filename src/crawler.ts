@@ -23,7 +23,14 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e)).sli
 /** Runs discovery for a source and stores the result. */
 export async function discoverSource(source: Source): Promise<Source> {
   const d = await discover(source.url);
-  store.updateSource(source.id, { mode: d.mode, feed_url: d.feedUrl, title: source.title ?? d.title, last_error: null });
+  store.updateSource(source.id, {
+    mode: d.mode,
+    feed_url: d.feedUrl,
+    title: source.title ?? d.title,
+    last_error: null,
+    etag: null, // validators belong to the old feed URL
+    last_modified: null,
+  });
   return store.getSource(source.id)!;
 }
 
@@ -60,8 +67,19 @@ export async function crawlSource(source: Source): Promise<number> {
     const cutoff = Date.now() - config.retentionDays * 86_400_000;
 
     let jobs: Promise<boolean>[];
+    let validators: Pick<Source, "etag" | "last_modified"> = { etag: null, last_modified: null };
     if (source.mode === "feed" && source.feed_url) {
-      const res = await get(source.feed_url, { maxBytes: LIMITS.feedBytes });
+      // A conditional GET: an unchanged feed answers 304 with no body.
+      const headers: Record<string, string> = {};
+      if (source.etag) headers["If-None-Match"] = source.etag;
+      if (source.last_modified) headers["If-Modified-Since"] = source.last_modified;
+      const res = await get(source.feed_url, { maxBytes: LIMITS.feedBytes, headers });
+      if (res.status === 304) {
+        store.updateSource(source.id, { last_crawled_at: now(), last_error: null });
+        store.recordSourceRun(source.id, true);
+        return 0;
+      }
+      validators = { etag: res.header("etag"), last_modified: res.header("last-modified") };
       const feed = parseFeed(res.text(), res.url);
       const items = feed.items
         .slice(0, max)
@@ -78,13 +96,15 @@ export async function crawlSource(source: Source): Promise<number> {
     const added = results.filter((r) => r.status === "fulfilled" && r.value).length;
     const rejected = results.filter((r) => r.status === "rejected");
     const failed = rejected.length;
+    const allFailed = failed > 0 && !added && failed === results.length;
     store.updateSource(source.id, {
       last_crawled_at: now(),
-      last_error:
-        failed && !added && failed === results.length
-          ? `all ${failed} articles failed: ${message(rejected[0].reason)}`
-          : null,
+      last_error: allFailed ? `all ${failed} articles failed: ${message(rejected[0].reason)}` : null,
+      // Keep the validators only if every item was dealt with. Items skipped over a request budget
+      // or rate limit must be retried next run, and a 304 would hide them.
+      ...(failed ? { etag: null, last_modified: null } : validators),
     });
+    store.recordSourceRun(source.id, !allFailed);
     return added;
   } catch (e) {
     // A rate limit, outage or timeout says nothing about the feed, so keep it. Anything else
@@ -93,8 +113,9 @@ export async function crawlSource(source: Source): Promise<number> {
     store.updateSource(source.id, {
       last_crawled_at: now(),
       last_error: message(e),
-      ...(keep ? {} : { mode: null, feed_url: null }),
+      ...(keep ? {} : { mode: null, feed_url: null, etag: null, last_modified: null }),
     });
+    store.recordSourceRun(source.id, false);
     return 0;
   }
 }

@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
 import * as store from "./db.ts";
-import { parseKeyset, type ArticleQuery, type ArticleRow, type Feedback } from "./db.ts";
+import { parseKeyset, type ArticleFilter, type Feedback, type RankableRow } from "./db.ts";
+import { firstPage, nextPage } from "./snapshots.ts";
 
 // "For you" ranking. Each reaction is a point in embedding space with a weight; an article
 // scores by the weighted sentiment of its nearest reactions, so separate interests (say,
@@ -16,10 +16,11 @@ const EXPLORE_EVERY = 6; // every 6th slot goes to something the profile knows l
 const EXPLORE_SUPPORT = 0.15;
 export const MIN_REACTIONS = 3;
 
-/** Thumbs count fully, a hide is a softer no, and a click alone is a mild yes. */
+/** Thumbs count fully, a hide is a softer no, saving is a fair yes and a click alone a mild one. */
 function weight(f: Feedback): number {
   if (f.rating) return f.rating;
   if (f.hidden) return -0.6;
+  if (f.saved) return 0.5;
   if (f.clicks) return 0.3;
   return 0;
 }
@@ -30,48 +31,17 @@ const dot = (a: Float32Array, b: Float32Array) => {
   return s;
 };
 
-interface Ranked extends ArticleRow {
-  score: number;
-  reason: string | null;
-}
+type Weighted = Feedback & { w: number };
 
-// Ranking again for every page would let the order shift under the reader (a hide or 👍 on page one
-// re-ranks the rest), skipping or repeating articles. So the first page ranks once and stores the
-// order, and later pages slice that snapshot. The cursor is "<snapshot id>:<offset>".
-type RankedRow = Omit<Ranked, "embedding">;
-const SNAPSHOT_TTL_MS = 30 * 60_000;
-const MAX_SNAPSHOTS = 8;
-const snapshots = new Map<string, { rows: RankedRow[]; reactions: number; created: number }>();
-
-function page(id: string, rows: RankedRow[], reactions: number, offset: number, limit: number) {
-  const end = offset + limit;
-  const next = end < rows.length ? `${id}:${end}` : null;
-  return { total: rows.length, rows: rows.slice(offset, end), next, coldStart: false, reactions };
-}
-
-export type ForYouQuery = Omit<ArticleQuery, "after" | "sort"> & { after?: string };
-
-// The date range narrows the candidates; sort is ignored, since this view's order is the ranking.
-export function forYou({ source, q, since, limit, after }: ForYouQuery) {
-  const cursor = after ? /^([\w-]+):(\d+)$/.exec(after) : null;
-  const snap = cursor ? snapshots.get(cursor[1]) : undefined;
-  if (cursor && snap && Date.now() - snap.created < SNAPSHOT_TTL_MS) {
-    return page(cursor[1], snap.rows, snap.reactions, Number(cursor[2]), limit);
-  }
-  // A "key|id" cursor comes from a cold-start page (the plain latest list), so keep paging that list.
-  const keyset = after ? parseKeyset(after) : undefined;
-
-  const reactions = store
+function weightedReactions(): Weighted[] {
+  return store
     .listFeedback()
     .map((f) => ({ ...f, w: weight(f) }))
     .filter((f) => f.w !== 0);
-  const trained = reactions.filter((f) => f.embedding);
-  if (trained.length < MIN_REACTIONS || keyset) {
-    const latest = store.listArticles({ source, q, since, limit, after: keyset });
-    return { ...latest, coldStart: trained.length < MIN_REACTIONS, reactions: trained.length };
-  }
+}
 
-  // Bayesian-ish source affinity: two phantom neutral votes keep one like from dominating.
+/** Bayesian-ish source affinity: two phantom neutral votes keep one like from dominating. */
+function sourceAffinity(reactions: Weighted[]) {
   const bySource = new Map<number, { sum: number; n: number }>();
   for (const f of reactions) {
     if (f.source_id == null) continue;
@@ -80,23 +50,51 @@ export function forYou({ source, q, since, limit, after }: ForYouQuery) {
     s.n++;
     bySource.set(f.source_id, s);
   }
-  const affinity = (id: number) => {
-    const s = bySource.get(id);
-    return s ? s.sum / (s.n + 2) : 0;
+  return {
+    bySource,
+    affinity: (id: number) => {
+      const s = bySource.get(id);
+      return s ? s.sum / (s.n + 2) : 0;
+    },
   };
+}
 
+type RankedRow = Omit<RankableRow, "embedding"> & { score: number; reason: string | null };
+
+export type ForYouQuery = Omit<ArticleFilter, "q" | "saved"> & { limit: number; after?: string };
+
+// The date range narrows the candidates; sort is ignored, since this view's order is the ranking.
+// Only a story's first report is ranked; its other reports ride along as coverage.
+export function forYou(query: ForYouQuery) {
+  const { limit, after, ...filter } = query;
+  const cached = nextPage<RankedRow, { reactions: number }>(after, limit);
+  if (cached) {
+    const { meta, ...page } = cached;
+    return { ...page, rows: store.withCoverage(page.rows, filter), coldStart: false, reactions: meta.reactions };
+  }
+  // A "key|id" cursor comes from a cold-start page (the plain latest list), so keep paging that list.
+  const keyset = after ? parseKeyset(after) : undefined;
+
+  const reactions = weightedReactions();
+  const trained = reactions.filter((f) => f.embedding);
+  if (trained.length < MIN_REACTIONS || keyset) {
+    const latest = store.listArticles({ ...filter, limit, after: keyset });
+    return { ...latest, coldStart: trained.length < MIN_REACTIONS, reactions: trained.length };
+  }
+
+  const { affinity } = sourceAffinity(reactions);
   const now = Date.now();
   const seen = new Set(reactions.map((f) => f.url));
-  const ranked: (Ranked & { support: number })[] = [];
-  for (const a of store.candidateArticles({ source, q, since })) {
-    if (seen.has(a.url)) continue; // already rated, hidden or opened
+  const ranked: (RankedRow & { support: number })[] = [];
+  for (const { embedding, ...a } of store.candidateArticles(filter, { leadsOnly: true })) {
+    if (seen.has(a.url)) continue; // already rated, hidden, saved or opened
 
     let rel = 0;
     let support = 0;
     let best: { title: string; pull: number } | null = null;
-    if (a.embedding) {
+    if (embedding) {
       const near = trained
-        .map((f) => ({ f, s: Math.max(0, dot(a.embedding!, f.embedding!) - SIM_FLOOR) }))
+        .map((f) => ({ f, s: Math.max(0, dot(embedding, f.embedding!) - SIM_FLOOR) }))
         .sort((x, y) => y.s - x.s)
         .slice(0, NEIGHBOURS);
       let pull = 0;
@@ -134,10 +132,47 @@ export function forYou({ source, q, since, limit, after }: ForYouQuery) {
     ordered.push(next);
   }
 
-  const rows: RankedRow[] = ordered.map(({ embedding: _e, support: _s, ...r }) => r);
-  for (const [id, s] of snapshots) if (Date.now() - s.created >= SNAPSHOT_TTL_MS) snapshots.delete(id);
-  while (snapshots.size >= MAX_SNAPSHOTS) snapshots.delete(snapshots.keys().next().value!);
-  const id = randomUUID().slice(0, 8);
-  snapshots.set(id, { rows, reactions: trained.length, created: Date.now() });
-  return page(id, rows, trained.length, 0, limit);
+  const rows: RankedRow[] = ordered.map(({ support: _s, ...r }) => r);
+  const { meta, ...page } = firstPage(rows, { reactions: trained.length }, limit);
+  return { ...page, rows: store.withCoverage(page.rows, filter), coldStart: false, reactions: meta.reactions };
+}
+
+// ─── Profile ────────────────────────────────────────────────────────────────
+
+/** What the ranking has learned, for the profile page: counts, tags and sources you lean toward. */
+export function profile() {
+  const all = store.listFeedback();
+  const reactions = weightedReactions();
+  const { bySource, affinity } = sourceAffinity(reactions);
+  const titles = new Map(store.listSources().map((s) => [s.id, s.title || new URL(s.url).hostname]));
+
+  // Feed tags summed by reaction weight; a tag needs two reactions before it says anything.
+  const tags = new Map<string, { sum: number; n: number }>();
+  for (const f of reactions) {
+    for (const t of f.categories ? (JSON.parse(f.categories) as string[]) : []) {
+      const s = tags.get(t) ?? { sum: 0, n: 0 };
+      s.sum += f.w;
+      s.n++;
+      tags.set(t, s);
+    }
+  }
+  const tagList = [...tags].filter(([, s]) => s.n >= 2).map(([tag, s]) => ({ tag, score: s.sum, n: s.n }));
+
+  return {
+    counts: {
+      up: all.filter((f) => f.rating === 1).length,
+      down: all.filter((f) => f.rating === -1).length,
+      hidden: all.filter((f) => f.hidden).length,
+      opened: all.filter((f) => f.clicks > 0).length,
+      saved: all.filter((f) => f.saved).length,
+    },
+    minReactions: MIN_REACTIONS,
+    trained: reactions.filter((f) => f.embedding).length,
+    likedTags: tagList.filter((t) => t.score > 0).sort((a, b) => b.score - a.score).slice(0, 12),
+    dislikedTags: tagList.filter((t) => t.score < 0).sort((a, b) => a.score - b.score).slice(0, 12),
+    sources: [...bySource]
+      .map(([id, s]) => ({ id, title: titles.get(id) ?? "Removed source", affinity: affinity(id), n: s.n }))
+      .sort((a, b) => b.affinity - a.affinity),
+    reactions: store.listReactions(),
+  };
 }

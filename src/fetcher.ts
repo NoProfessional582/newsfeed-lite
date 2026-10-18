@@ -36,6 +36,14 @@ export interface FetchResult {
   contentType: string;
   body: Buffer;
   text(): string;
+  header(name: string): string | null;
+}
+
+export interface GetOptions {
+  maxBytes?: number;
+  accept?: string;
+  /** Extra request headers, e.g. If-None-Match for a conditional feed fetch. */
+  headers?: Record<string, string>;
 }
 
 // ─── Global concurrency + per-host spacing ──────────────────────────────────
@@ -221,7 +229,7 @@ async function readCapped(res: Response, maxBytes: number): Promise<Buffer> {
 }
 
 /** One GET with redirects followed by hand so every hop is checked. No robots check. */
-async function rawGet(href: string, maxBytes: number, accept?: string): Promise<FetchResult> {
+async function rawGet(href: string, maxBytes: number, opts: GetOptions = {}): Promise<FetchResult> {
   let url = new URL(href);
   for (let hop = 0; hop <= LIMITS.maxRedirects; hop++) {
     assertPublic(url);
@@ -233,7 +241,7 @@ async function rawGet(href: string, maxBytes: number, accept?: string): Promise<
     requestsThisRun.set(url.host, (requestsThisRun.get(url.host) ?? 0) + 1);
     await acquire();
     try {
-      const result = await fetchOnce(url, maxBytes, accept).catch((e: unknown) => {
+      const result = await fetchOnce(url, maxBytes, opts).catch((e: unknown) => {
         if (e instanceof FetchError) throw e;
         // fetch() wraps errors from the connection, including publicLookup's refusal, in a TypeError.
         if (e instanceof Error && e.cause instanceof FetchError) throw e.cause;
@@ -252,7 +260,7 @@ async function rawGet(href: string, maxBytes: number, accept?: string): Promise<
   throw new FetchError(`too many redirects for ${href}`);
 }
 
-async function fetchOnce(url: URL, maxBytes: number, accept?: string): Promise<FetchResult | { redirect: URL }> {
+async function fetchOnce(url: URL, maxBytes: number, opts: GetOptions): Promise<FetchResult | { redirect: URL }> {
   const signal = AbortSignal.timeout(config.timeoutMs);
   const res = await fetch(url, {
     redirect: "manual",
@@ -260,8 +268,9 @@ async function fetchOnce(url: URL, maxBytes: number, accept?: string): Promise<F
     dispatcher,
     headers: {
       "User-Agent": config.userAgent,
-      Accept: accept ?? "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      Accept: opts.accept ?? "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.5",
+      ...opts.headers,
     },
   });
   noteBackoff(url.host, res.status, res.headers.get("retry-after"));
@@ -278,6 +287,7 @@ async function fetchOnce(url: URL, maxBytes: number, accept?: string): Promise<F
     contentType: res.headers.get("content-type") ?? "",
     body,
     text: () => decode(body, res.headers.get("content-type")),
+    header: (name) => res.headers.get(name),
   };
 }
 
@@ -296,11 +306,11 @@ function decode(body: Buffer, contentType: string | null): string {
  */
 export async function get(
   href: string,
-  opts: { maxBytes?: number; accept?: string } = {},
+  opts: GetOptions = {},
 ): Promise<FetchResult> {
   const url = new URL(href);
   if (!(await allowedByRobots(url))) throw new FetchError(`disallowed by robots.txt: ${href}`);
-  const res = await rawGet(href, opts.maxBytes ?? LIMITS.pageBytes, opts.accept);
+  const res = await rawGet(href, opts.maxBytes ?? LIMITS.pageBytes, opts);
   if (res.status >= 400) {
     throw new FetchError(`HTTP ${res.status} from ${href}`, res.status === 429 || res.status >= 500);
   }
@@ -313,7 +323,7 @@ export async function get(
  */
 export async function tryGet(
   href: string,
-  opts: { maxBytes?: number; accept?: string } = {},
+  opts: GetOptions = {},
 ): Promise<FetchResult | null> {
   try {
     return await get(href, opts);

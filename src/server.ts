@@ -8,7 +8,8 @@ import { crawlAll, discoverSource, status } from "./crawler.ts";
 import { deleteImages } from "./images.ts";
 import { startScheduler } from "./scheduler.ts";
 import { embedPending } from "./embed.ts";
-import { forYou } from "./recommend.ts";
+import { forYou, profile } from "./recommend.ts";
+import { search } from "./search.ts";
 
 const app = new Hono();
 
@@ -30,7 +31,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/api/articles", (c) => {
+app.get("/api/articles", async (c) => {
   const source = Number(c.req.query("source")) || undefined;
   const q = c.req.query("q")?.trim() || undefined;
   const limit = Math.min(Number(c.req.query("limit")) || 60, 200);
@@ -40,25 +41,45 @@ app.get("/api/articles", (c) => {
   const days = Number(c.req.query("days"));
   const since = days > 0 ? new Date(Date.now() - days * 86_400_000).toISOString() : undefined;
   const sort = c.req.query("sort") === "oldest" ? ("oldest" as const) : ("newest" as const);
-  const filter = { source, q, since, limit };
-  return c.json(
-    c.req.query("view") === "foryou"
-      ? forYou({ ...filter, after })
-      : store.listArticles({ ...filter, sort, after: after ? store.parseKeyset(after) : undefined }),
-  );
+  const view = c.req.query("view");
+  const filter = { source, since, limit, unread: c.req.query("unread") === "1", saved: view === "saved" };
+  // A search ranks by relevance in every view; Saved only narrows it to saved articles.
+  if (q) return c.json(await search({ ...filter, q, after }));
+  if (view === "foryou") return c.json(forYou({ ...filter, after }));
+  return c.json(store.listArticles({ ...filter, sort, after: after ? store.parseKeyset(after) : undefined }));
 });
 
 app.post("/api/articles/:id/feedback", async (c) => {
-  type Body = { rating?: unknown; hidden?: unknown; click?: unknown };
+  type Body = { rating?: unknown; hidden?: unknown; click?: unknown; saved?: unknown };
   const body = await c.req.json<Body>().catch((): Body => ({}));
   const change: store.FeedbackChange = {};
   if (body.rating === -1 || body.rating === 0 || body.rating === 1) change.rating = body.rating;
   if (typeof body.hidden === "boolean") change.hidden = body.hidden;
   if (body.click === true) change.click = true;
+  if (typeof body.saved === "boolean") change.saved = body.saved;
   if (!Object.keys(change).length) return c.json({ error: "Nothing to record" }, 400);
   if (!store.recordFeedback(Number(c.req.param("id")), change)) return c.json({ error: "No such article" }, 404);
   // A reaction to an article the model hasn't reached yet gets its vector in the background.
   void embedPending().catch((e) => console.error("[embed] failed:", e));
+  return c.body(null, 204);
+});
+
+app.get("/api/profile", (c) => c.json(profile()));
+
+// Edits a reaction from the profile page. By URL, since the article itself may have been pruned.
+app.patch("/api/reactions", async (c) => {
+  type Body = { url?: unknown; rating?: unknown; hidden?: unknown };
+  const body = await c.req.json<Body>().catch((): Body => ({}));
+  const change: Pick<store.FeedbackChange, "rating" | "hidden"> = {};
+  if (body.rating === -1 || body.rating === 0 || body.rating === 1) change.rating = body.rating;
+  if (typeof body.hidden === "boolean") change.hidden = body.hidden;
+  if (typeof body.url !== "string" || !Object.keys(change).length) return c.json({ error: "Nothing to change" }, 400);
+  if (!store.changeReaction(body.url, change)) return c.json({ error: "No such reaction" }, 404);
+  return c.body(null, 204);
+});
+
+app.post("/api/profile/reset", (c) => {
+  store.resetProfile();
   return c.body(null, 204);
 });
 

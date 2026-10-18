@@ -77,17 +77,52 @@ function pageTags(document: Document): string[] {
   return [...new Set(tags)].slice(0, 12);
 }
 
-/** First three substantial paragraphs of the readable article body. */
-function readableLead(document: Document): string | null {
+const BIO_ROLE = /\b(writer|journalist|author|editor|reporter|contributor|columnist|freelancer|tech enthusiast)\b/i;
+
+/**
+ * True for an author blurb rather than article text. Some templates (Valnet's How-To Geek and XDA)
+ * put the byline's bio in the article header as plain paragraphs, which Readability then picks as
+ * the article. A bio opens with the author's name ("Ismar is a Senior Author…", "Umair Khurshid is
+ * a technology writer…"), or with any name followed by "is a … writer/journalist/…".
+ */
+export function looksLikeBio(text: string, author: string | null): boolean {
+  const start = text.trim().slice(0, 200);
+  const name = (author ?? "").replace(/^.*\(|\)$/g, "").trim(); // "staff@bgr.com (Jane Doe)" -> "Jane Doe"
+  const first = name.split(/\s+/)[0];
+  for (const n of new Set([name, first])) {
+    if (n.length >= 2 && start.toLowerCase().startsWith(n.toLowerCase()) && /^\s*(is|has|was|’s|'s)\b/i.test(start.slice(n.length))) {
+      return true;
+    }
+  }
+  const lead = /^(\p{Lu}[\p{L}'’-]+(?:\s+\p{Lu}[\p{L}'’-]+){0,2})\s+is\s+an?\s+([^.]{0,80})/u.exec(start);
+  return !!lead && BIO_ROLE.test(lead[2]);
+}
+
+const paragraphs = (root: ParentNode, author: string | null) =>
+  [...root.querySelectorAll("p")]
+    .map((p) => (p.textContent ?? "").replace(/\s+/g, " ").trim())
+    .filter((t) => t.length > 60 && !looksLikeBio(t, author));
+
+// Containers that sites mark up as the article itself. When one has real paragraphs it beats
+// Readability's guess, which can land on a header bio or a related-posts block instead.
+const BODY_SELECTORS = [
+  '[itemprop="articleBody"]', "#article-body", ".article-body", ".article__body", ".entry-content", ".post-content",
+];
+
+/** First three substantial paragraphs of the article body. */
+function articleLead(document: Document, author: string | null): string | null {
+  for (const sel of BODY_SELECTORS) {
+    const el = document.querySelector(sel);
+    const paras = el ? paragraphs(el, author) : [];
+    if (paras.length >= 2) return paras.slice(0, 3).join(" ");
+  }
   try {
     const article = new Readability(document.cloneNode(true) as Document, { charThreshold: 300 }).parse();
     if (!article?.content) return null;
     const { document: body } = parseHTML(`<!doctype html><body>${article.content}</body>`);
-    const paras = [...body.querySelectorAll("p")]
-      .map((p) => (p.textContent ?? "").replace(/\s+/g, " ").trim())
-      .filter((t) => t.length > 60);
-    const lead = paras.slice(0, 3).join(" ");
-    return lead || (article.excerpt ?? null);
+    const lead = paragraphs(body, author).slice(0, 3).join(" ");
+    const excerpt = article.excerpt && !looksLikeBio(article.excerpt, author) ? article.excerpt : null;
+    return lead || excerpt;
   } catch {
     return null;
   }
@@ -106,7 +141,7 @@ export async function extractPreview(url: string, item?: FeedItem): Promise<Prev
     return {
       url,
       title: item.title,
-      excerpt: feedSummary ? clip(feedSummary) : null,
+      excerpt: feedSummary && !looksLikeBio(feedSummary, item.author) ? clip(feedSummary) : null,
       imageUrl: item.image,
       author: item.author,
       publishedAt: item.publishedAt,
@@ -129,13 +164,18 @@ export async function extractPreview(url: string, item?: FeedItem): Promise<Prev
   const siteName = meta(document, "og:site_name");
   const title = siteName ? stripSuffix(rawTitle, siteName) : rawTitle;
 
+  const author = item?.author ?? meta(document, "author", "article:author");
+
   // Prefer a substantial feed summary or meta description. When both are short teasers,
-  // the article's own opening paragraphs make a better preview.
-  const og = meta(document, "og:description", "twitter:description", "description") ?? "";
-  const best = og.length > feedSummary.length ? og : feedSummary;
+  // the article's own opening paragraphs make a better preview. A summary that is really the
+  // author's bio doesn't count.
+  const usable = (s: string) => (s && !looksLikeBio(s, author) ? s : "");
+  const og = usable(meta(document, "og:description", "twitter:description", "description") ?? "");
+  const summary = usable(feedSummary);
+  const best = og.length > summary.length ? og : summary;
   let excerpt: string | null = best || null;
   if (best.length < MIN_SUMMARY) {
-    const lead = readableLead(document);
+    const lead = articleLead(document, author);
     if (lead && lead.length > best.length) excerpt = lead;
   }
 
@@ -150,7 +190,7 @@ export async function extractPreview(url: string, item?: FeedItem): Promise<Prev
     title: title.replace(/\s+/g, " ").trim(),
     excerpt: excerpt ? clip(excerpt) : null,
     imageUrl,
-    author: item?.author ?? meta(document, "author", "article:author"),
+    author,
     publishedAt:
       item?.publishedAt ??
       safeIso(meta(document, "article:published_time", "datePublished", "date")) ??

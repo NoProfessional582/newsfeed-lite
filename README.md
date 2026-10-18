@@ -38,6 +38,31 @@ headless run, for example from a Windows scheduled task, use `npm run crawl`.
 - Rate limits, 5xx errors and timeouts are treated as temporary. The source keeps its detected feed
   and shows the error until a later run succeeds. Other errors clear the feed so the next run detects
   it again.
+- Feeds are fetched conditionally (`If-None-Match` / `If-Modified-Since`), so an unchanged feed
+  answers with an empty 304. The validators are kept only when every item in the run was handled. If
+  any were skipped over a budget or rate limit, the next run fetches the full feed so they get picked up.
+- **Source health:** Sources shows each source's state. One that fails 3 runs in a row (2 if it has
+  never worked) is marked failing, the Sources button shows a count, and **Remove them** clears every
+  failing source at once.
+
+## Reading
+
+- **Saved:** the bookmark on a card keeps it under **Saved**, sorted by when you saved it. Saved
+  articles are exempt from `retentionDays` pruning. They're still deleted with their source.
+- **Read state:** articles you've opened are dimmed and marked "opened". **Unread only** leaves
+  them out of every view.
+- **Story groups:** when several sites report the same story, only the first report gets a card. The
+  others appear under it as "Also covered by …" links. Two reports match when their embedding
+  similarity plus a bonus for shared rare title words reaches 0.93 (`src/cluster.ts`), and they come
+  from different sites within 3 days. The threshold is strict on purpose: on this project's data,
+  same-story pairs scored 0.60–0.83 on embeddings alone, overlapping unrelated pieces on the same
+  topic. Hiding the lead hides the whole story. Filtering by source shows that source's own reports
+  ungrouped.
+- **Search** ranks by meaning as well as words: "graphics card prices" finds an RTX 5080 pricing story
+  that contains none of those words. Results containing every query word get a boost, more when the
+  words are in the headline. Matches on meaning alone are labelled "Related to your search" and need
+  a similarity of 0.4 (`src/search.ts`). Results are ordered by relevance in every view. If the model
+  can't load, search falls back to plain keyword matching.
 
 ## How a preview is built
 
@@ -46,8 +71,10 @@ headless run, for example from a Windows scheduled task, use `npm run crawl`.
   cropped to 640×400 WebP using sharp's attention-based crop and saved in `data/images/`. If the
   download fails, the original image URL is used instead.
 - **Highlight:** the feed summary or `og:description`, whichever is longer, if it's substantial (250+ characters). 
-  Otherwise the first three paragraphs that Readability extracts. Trimmed to about 400 characters on
-  a sentence boundary.
+  Otherwise the first three paragraphs of the article body: the page's own marked-up body
+  (`itemprop="articleBody"`, `#article-body`, …) when it has one, else what Readability extracts.
+  Paragraphs and summaries that read like the author's bio ("Jane is a senior writer at…") are
+  skipped. Trimmed to about 400 characters on a sentence boundary.
 - **Dedup:** by canonical URL. Every URL that led to a stored article, the feed link as well as the
   canonical URL, is remembered in `seen_urls`, so it isn't fetched again and doesn't return as new
   after pruning. A URL is forgotten once it hasn't appeared in a crawl for `retentionDays`.
@@ -66,8 +93,13 @@ as a mild 👍. After three reactions, the **For you** view ranks articles by wh
   boost with a 3-day half-life. Every 6th slot goes to a fresh article the profile knows little
   about, so the feed keeps learning. The caption on each card says why it's there.
 - **Persistence:** reactions live in a `feedback` table with their own copy of the article's text and
-  vector, so your profile survives the `retentionDays` pruning. Hidden articles drop out of both views.
-  Articles you've already rated, hidden or opened are left out of For you.
+  vector, so your profile survives the `retentionDays` pruning. Hidden articles drop out of every view.
+  Articles you've already rated, hidden, saved or opened are left out of For you.
+- **Profile:** the **Profile** button shows what the ranking has learned. That covers your reaction
+  counts, feed tags you lean toward or avoid (once a tag has two reactions), and how much you like
+  each source. It lists every thumb and hide, and each one can be flipped, unhidden or forgotten,
+  even after the article itself has been pruned. **Reset profile** forgets every reaction but keeps
+  your saved articles.
 
 ### How reactions count
 
@@ -76,6 +108,7 @@ as a mild 👍. After three reactions, the **For you** view ranks articles by wh
 | 👍 | +1 |
 | 👎 | −1 |
 | Hide (with no thumb) | −0.6 |
+| Saved, not rated | +0.5 |
 | Opened, not rated | +0.3 |
 
 A thumb overrides everything else. Pressing the same thumb again clears it.
@@ -95,19 +128,20 @@ The weights are fixed by hand for now. They're constants at the top of `src/reco
 | `EXPLORE_EVERY` | 6 | Interval between exploration slots |
 | `MIN_REACTIONS` | 3 | Reactions needed before For you ranks anything. Below that it shows the latest |
 
-To reset your profile, stop the server and run
-`node -e "new (require('node:sqlite').DatabaseSync)('data/newsfeed.db').exec('DELETE FROM feedback')"`.
-
 ### API
 
-- `GET /api/articles`: `q`, `source`, `days`, `sort` (`newest`/`oldest`) and `limit`. Pages are
-  cursor-based: pass the response's `next` back as `after` to get the following page (`next` is null
-  on the last one). Hiding an article between pages doesn't shift what comes next.
-- `GET /api/articles?view=foryou`: same parameters as the normal list. Each row also has `score`
-  and `reason`, and the response includes `coldStart` and `reactions`. The first page ranks once and
-  later pages read that ranking for 30 minutes, so reacting while you scroll doesn't reshuffle them.
+- `GET /api/articles`: `view` (`latest`, `foryou` or `saved`), `q`, `source`, `days`, `unread=1`,
+  `sort` (`newest`/`oldest`) and `limit`. Pages are cursor-based: pass the response's `next` back as
+  `after` to get the following page (`next` is null on the last one). Hiding an article between pages
+  doesn't shift what comes next. Each row has `coverage`, the other sites' reports of its story.
+- With `view=foryou`, each row also has `score` and `reason`, and the response includes `coldStart`
+  and `reactions`. With `q`, results are ranked by relevance in any view. Ranked results are computed
+  on the first page and later pages read that ranking for 30 minutes, so reacting while you scroll
+  doesn't reshuffle them.
 - `POST /api/articles/:id/feedback`: a JSON body with any of `rating` (-1, 0 or 1), `hidden`
-  (boolean) or `click: true`.
+  (boolean), `saved` (boolean) or `click: true`.
+- `GET /api/profile`: what the Profile page shows. `PATCH /api/reactions` with `url` and `rating`
+  or `hidden` changes one reaction. `POST /api/profile/reset` forgets every reaction except saves.
 
 ### Not built yet
 
@@ -116,8 +150,6 @@ To reset your profile, stop the server and run
   inputs. It's worth adding once there are about 50 reactions to learn from.
 - **Keyword fallback:** a model based on source, tags and title words, with no embeddings. It was
   skipped because embeddings already work well with only a few reactions.
-- **Profile page:** a page showing what the ranking has learned, such as liked topics and source
-  affinities, with a way to edit it.
 - **Source suggestions:** suggest new sites to add based on what you 👍, using the existing feed
   discovery.
 
@@ -155,6 +187,8 @@ src/server.ts     Hono API + static UI          src/discover.ts  feed discovery,
 src/crawler.ts    crawl run orchestration       src/feed.ts      RSS 2.0 / RSS 1.0 / Atom parsing
 src/extract.ts    article page → preview        src/fetcher.ts   polite, capped, checked HTTP GET
 src/images.ts     thumbnail download + crop     src/db.ts        node:sqlite schema and queries
-src/embed.ts      local sentence embeddings     src/recommend.ts "For you" ranking
+src/embed.ts      local sentence embeddings     src/recommend.ts "For you" ranking, profile
+src/cluster.ts    same-story grouping           src/search.ts    semantic + keyword search
+src/snapshots.ts  stable paging of rankings     test/            node:test suites (npm test)
 public/index.html the UI                        data/            database, images, model (gitignored)
 ```

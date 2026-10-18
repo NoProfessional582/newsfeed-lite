@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { env, pipeline, type FeatureExtractionPipeline } from "@huggingface/transformers";
 import { DATA_DIR } from "./config.ts";
 import * as store from "./db.ts";
+import { clusterPending } from "./cluster.ts";
 
 // A small sentence-embedding model, run in this process on the CPU. The ~23 MB download from
 // Hugging Face happens once; after that the model loads from data/models and nothing leaves
@@ -21,6 +22,12 @@ function load(): Promise<FeatureExtractionPipeline> {
     throw e;
   });
   return model;
+}
+
+/** Embeds a search query, in the same space as the articles. */
+export async function embedQuery(text: string): Promise<Float32Array> {
+  const out = await (await load())([text], { pooling: "mean", normalize: true });
+  return (out.data as Float32Array).slice(0, out.dims[1]);
 }
 
 /** The text an article is judged by: headline, preview and feed tags. */
@@ -48,6 +55,7 @@ export function embedPending(): Promise<number> {
       running = null;
     }
     if (done) console.log(`[embed] ${done} new vectors`);
+    clusterPending(); // stories are grouped by vector, so new vectors may join or start one
     return done;
   })();
   return running;
