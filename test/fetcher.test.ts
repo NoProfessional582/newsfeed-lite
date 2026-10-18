@@ -5,10 +5,11 @@ import { get, hostStateSizes, isPrivate, pruneHostState, FetchError } from "../s
 test("isPrivate covers loopback, LAN and mapped forms", () => {
   for (const ip of ["127.0.0.1", "10.1.2.3", "192.168.1.10", "172.20.0.1", "169.254.1.1", "100.64.0.1",
     "0.0.0.0", "::1", "::", "fd00::1", "fe80::1", "::ffff:7f00:1", "::ffff:127.0.0.1", "::ffff:c0a8:101",
-    "64:ff9b::7f00:1", "not-an-ip"]) {
+    "64:ff9b::7f00:1", "::7f00:1", "2002:7f00:1::1", "2002:c0a8:101::", "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+    "not-an-ip"]) {
     assert.equal(isPrivate(ip), true, ip);
   }
-  for (const ip of ["1.1.1.1", "93.184.216.34", "2606:4700:4700::1111", "::ffff:101:101"]) {
+  for (const ip of ["1.1.1.1", "93.184.216.34", "2606:4700:4700::1111", "::ffff:101:101", "2001:4860:4860::8888", "2003::1"]) {
     assert.equal(isPrivate(ip), false, ip);
   }
 });
