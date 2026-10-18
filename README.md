@@ -28,6 +28,17 @@ Open **Sources** and add URLs. Any of these work:
 A crawl runs at startup, every `intervalMinutes`, and when you click **Refresh**. For a single
 headless run, for example from a Windows scheduled task, use `npm run crawl`.
 
+### Being polite to sites
+
+- Requests to one host are spaced `perHostDelayMs` apart, and a run sends at most
+  `maxRequestsPerHostPerRun` to any one host. This matters when several sources share a site. Articles
+  over the budget are skipped and picked up next run.
+- A **429** stops all requests to that host for the rest of the run. A `Retry-After` on a 429 or 503
+  is honoured across runs too.
+- Rate limits, 5xx errors and timeouts are treated as temporary. The source keeps its detected feed
+  and shows the error until a later run succeeds. Other errors clear the feed so the next run detects
+  it again.
+
 ## How a preview is built
 
 - **Headline:** `og:title`, then `<h1>`, then the feed title.
@@ -114,6 +125,7 @@ To reset your profile, stop the server and run
 | `retentionDays` | 30 | Articles and images older than this are deleted |
 | `concurrency` | 4 | Fetches running at once, across all sites |
 | `perHostDelayMs` | 1000 | Minimum gap between requests to the same host |
+| `maxRequestsPerHostPerRun` | 100 | Most requests one crawl run sends to one host, including images |
 | `timeoutMs` | 15000 | Per-request timeout |
 | `respectRobots` | true | Skip URLs that robots.txt disallows |
 | `userAgent` | … | The User-Agent header sent with requests |

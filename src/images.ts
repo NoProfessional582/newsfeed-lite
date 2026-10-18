@@ -20,7 +20,9 @@ export async function saveThumbnail(imageUrl: string, articleUrl: string): Promi
   const dest = join(IMAGE_DIR, name);
   if (existsSync(dest)) return name;
 
-  const res = await tryGet(imageUrl, { maxBytes: LIMITS.imageBytes, accept: "image/avif,image/webp,image/*,*/*;q=0.5" });
+  // A throttled image host just means no thumbnail; the article keeps the original image URL.
+  const res = await tryGet(imageUrl, { maxBytes: LIMITS.imageBytes, accept: "image/avif,image/webp,image/*,*/*;q=0.5" })
+    .catch(() => null);
   if (!res || !res.body.length) return null;
   try {
     const { width = 0, height = 0 } = await sharp(res.body, { limitInputPixels: MAX_PIXELS }).metadata();

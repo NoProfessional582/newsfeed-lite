@@ -13,6 +13,7 @@ export interface Config {
   retentionDays: number;
   concurrency: number;
   perHostDelayMs: number;
+  maxRequestsPerHostPerRun: number;
   timeoutMs: number;
   respectRobots: boolean;
   userAgent: string;
@@ -25,6 +26,7 @@ const defaults: Config = {
   retentionDays: 30,
   concurrency: 4,
   perHostDelayMs: 1000,
+  maxRequestsPerHostPerRun: 100,
   timeoutMs: 15000,
   respectRobots: true,
   userAgent: "Mozilla/5.0 (compatible; newsfeed-lite/0.1; personal local reader)",

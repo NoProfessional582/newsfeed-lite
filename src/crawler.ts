@@ -3,7 +3,7 @@ import * as store from "./db.ts";
 import type { Source } from "./db.ts";
 import { discover, scrapeArticleLinks } from "./discover.ts";
 import { parseFeed, type FeedItem } from "./feed.ts";
-import { get, LIMITS } from "./fetcher.ts";
+import { get, startRun, FetchError, LIMITS } from "./fetcher.ts";
 import { extractPreview } from "./extract.ts";
 import { saveThumbnail, deleteImages } from "./images.ts";
 import { embedPending } from "./embed.ts";
@@ -71,15 +71,25 @@ export async function crawlSource(source: Source): Promise<number> {
     // One failed article costs that article, not the source.
     const results = await Promise.allSettled(jobs);
     const added = results.filter((r) => r.status === "fulfilled" && r.value).length;
-    const failed = results.filter((r) => r.status === "rejected").length;
+    const rejected = results.filter((r) => r.status === "rejected");
+    const failed = rejected.length;
     store.updateSource(source.id, {
       last_crawled_at: now(),
-      last_error: failed && !added && failed === results.length ? `all ${failed} articles failed` : null,
+      last_error:
+        failed && !added && failed === results.length
+          ? `all ${failed} articles failed: ${message(rejected[0].reason)}`
+          : null,
     });
     return added;
   } catch (e) {
-    // Forget the cached discovery so the next run re-detects (feeds move, sites redesign).
-    store.updateSource(source.id, { last_crawled_at: now(), last_error: message(e), mode: null, feed_url: null });
+    // A rate limit, outage or timeout says nothing about the feed, so keep it. Anything else
+    // forgets the cached discovery so the next run re-detects (feeds move, sites redesign).
+    const keep = e instanceof FetchError && e.temporary;
+    store.updateSource(source.id, {
+      last_crawled_at: now(),
+      last_error: message(e),
+      ...(keep ? {} : { mode: null, feed_url: null }),
+    });
     return 0;
   }
 }
@@ -88,6 +98,7 @@ export async function crawlSource(source: Source): Promise<number> {
 export async function crawlAll(): Promise<boolean> {
   if (status.running) return false;
   const sources = store.listSources().filter((s) => s.enabled);
+  startRun();
   Object.assign(status, { running: true, startedAt: now(), sourcesDone: 0, sourcesTotal: sources.length });
   let added = 0;
   try {
