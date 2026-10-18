@@ -34,10 +34,13 @@ export async function discoverSource(source: Source): Promise<Source> {
   return store.getSource(source.id)!;
 }
 
+/** True for an absolute http(s) URL, the only kind an article may link to. */
+const isWebUrl = (u: string) => /^https?:\/\//i.test(u);
+
 async function ingest(source: Source, url: string, item?: FeedItem): Promise<boolean> {
-  if (store.touchSeen(url)) return false;
+  if (!isWebUrl(url) || store.touchSeen(url)) return false;
   const preview = await extractPreview(url, item);
-  if (!preview) return false;
+  if (!preview || !isWebUrl(preview.url)) return false;
   if (preview.url !== url && store.touchSeen(preview.url)) {
     store.markSeen([url], source.id); // so the next run skips this link without fetching it
     return false;
