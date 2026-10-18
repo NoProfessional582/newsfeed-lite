@@ -1,0 +1,28 @@
+{
+  "name": "newsfeed-lite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local tech-news preview crawler: headline, image and excerpt per article, linked to the original.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "crawl": "node src/crawl-once.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "@mozilla/readability": "^0.6.0",
+    "fast-xml-parser": "^5.11.2",
+    "hono": "^4.13.13",
+    "linkedom": "^0.18.13",
+    "robots-parser": "^3.0.1",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "port": 4600,
+  "intervalMinutes": 60,
+  "maxArticlesPerSource": 20,
+  "retentionDays": 30,
+  "concurrency": 4,
+  "perHostDelayMs": 1000,
+  "timeoutMs": 15000,
+  "respectRobots": true,
+  "userAgent": "Mozilla/5.0 (compatible; newsfeed-lite/0.1; personal local reader)"
+}
