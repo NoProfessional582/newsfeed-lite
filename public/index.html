@@ -240,6 +240,22 @@
   .card.read .thumb img { opacity: .55; filter: saturate(.5); }
   .card.read .meta .read-tag { display: inline; }
   .meta .read-tag { display: none; }
+
+  /* New since your last visit: its own grid above (or, oldest first, below) a chat-style line. A separate
+     grid keeps bento's dense packing from pulling older cards up across the line. */
+  .feed { display: flex; flex-direction: column; gap: 18px; }
+  .feed[hidden], .grid[hidden], .new-line[hidden] { display: none; }
+  #gridNew { order: 1; } .new-line { order: 2; } #grid { order: 3; }
+  .feed[data-sort="oldest"] #gridNew { order: 4; }
+  .new-line { display: flex; align-items: center; gap: 12px; color: var(--terracotta); font: 600 12px/1.4 var(--font-mono); letter-spacing: .04em; }
+  .new-line::before { content: ""; flex: 1; height: 1px; background: currentColor; }
+  .new-line button { border: 1px solid currentColor; border-radius: 999px; background: none; color: inherit; font: inherit; padding: 3px 10px; cursor: pointer; }
+  .new-line button:hover { background: var(--accent-soft); }
+  .feed[data-layout="list"] .new-line { width: 100%; max-width: 940px; margin-inline: auto; }
+  /* Cards that arrived since your last visit but sort among the older ones (a late crawl of an older post). */
+  .meta .new-tag { color: var(--terracotta); font-weight: 600; text-transform: uppercase; }
+  .grid[data-layout="bento"] .t-hero .meta .new-tag { color: #f0b49b; }
+  #gridNew .meta .new-tag { display: none; }
   .icon-btn[data-save][aria-pressed="true"] { color: var(--terracotta); }
   .icon-btn[data-save][aria-pressed="true"] svg { fill: currentColor; }
   .coverage { flex: none; padding: 0 16px 6px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -336,7 +352,11 @@
 
 <main>
   <p class="notice" id="notice" hidden></p>
-  <div class="grid" id="grid"></div>
+  <div class="feed" id="feed">
+    <div class="grid" id="gridNew" hidden></div>
+    <div class="new-line" id="newLine" role="separator" hidden><span id="newLineText"></span><button id="markSeen">Mark as seen</button></div>
+    <div class="grid" id="grid"></div>
+  </div>
   <div class="empty-state" id="empty" hidden></div>
   <div class="more"><button class="btn" id="more" hidden>Load more</button></div>
 </main>
@@ -421,7 +441,7 @@ function card(a, i) {
     <a class="card-link" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">
       ${thumb}
       <div class="body">
-        <div class="meta"><span class="src">${esc(a.source_title || host(a.url))}</span>${when ? `<span>·</span><span>${when}</span>` : ""}${a.author ? `<span>·</span><span>${esc(a.author)}</span>` : ""}<span class="read-tag">· opened</span><span class="why">${esc(a.reason)}</span></div>
+        <div class="meta">${seenUntil && Date.parse(a.fetched_at) > seenUntil ? `<span class="new-tag">New</span><span>·</span>` : ""}<span class="src">${esc(a.source_title || host(a.url))}</span>${when ? `<span>·</span><span>${when}</span>` : ""}${a.author ? `<span>·</span><span>${esc(a.author)}</span>` : ""}<span class="read-tag">· opened</span><span class="why">${esc(a.reason)}</span></div>
         <h2>${esc(a.title)}</h2>
         ${a.excerpt ? `<p>${esc(a.excerpt)}</p>` : ""}
       </div>
@@ -473,8 +493,45 @@ function setView(v) {
 function setLayout(l) {
   layout = l;
   try { localStorage.setItem("layout", l); } catch {}
-  $("grid").dataset.layout = l;
+  for (const id of ["feed", "gridNew", "grid"]) $(id).dataset.layout = l;
   for (const b of document.querySelectorAll(".layouts button")) b.setAttribute("aria-pressed", String(b.dataset.layout === l));
+}
+
+// Like a chat app's unread line: Latest draws a line under what was published since your last visit.
+// A visit ends when the tab is hidden or closed; coming back after VISIT_GAP starts a new one, so a
+// quick tab switch doesn't move the line. seenUntil is that boundary, in ms; null on a first visit.
+const VISIT_GAP = 30 * 60e3;
+let seenUntil = null, hiddenAt = null;
+try { seenUntil = Number(localStorage.getItem("seenUntil")) || null; } catch {}
+function leave() {
+  hiddenAt = Date.now();
+  try { localStorage.setItem("seenUntil", String(hiddenAt)); } catch {}
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) leave();
+  else if (hiddenAt && Date.now() - hiddenAt > VISIT_GAP) { seenUntil = hiddenAt; loadArticles(); }
+});
+addEventListener("pagehide", leave);
+$("markSeen").addEventListener("click", () => {
+  seenUntil = Date.now();
+  try { localStorage.setItem("seenUntil", String(seenUntil)); } catch {}
+  loadArticles();
+});
+
+// Latest only, sorted by date and not searching, since the line splits a list ordered by publish date.
+const splitNew = () => view === "latest" && dateSorted() && seenUntil;
+const isNew = (a) => Date.parse(a.published_at ?? a.fetched_at) > seenUntil;
+let tiles = { gridNew: 0, grid: 0 };
+
+// Shows the line only once older cards have loaded too: until then the whole page is still new.
+function syncNewLine() {
+  const n = $("gridNew").querySelectorAll(".card").length;
+  $("gridNew").hidden = !n;
+  $("newLine").hidden = !(n && $("grid").querySelector(".card"));
+  const when = new Date(seenUntil).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+  $("newLineText").textContent = sort === "newest"
+    ? `↑ ${n} new since your last visit · ${when}`
+    : `↓ New since your last visit · ${when}`;
 }
 
 const feedback = (id, body) =>
@@ -501,13 +558,24 @@ async function loadArticles(append = false) {
     const need = 3 - reactions;
     $("notice").textContent = `Rate ${need} more article${need === 1 ? "" : "s"} with 👍 or 👎 and For you will start ranking. Showing the latest for now.`;
   }
-  const html = rows.map((a, i) => card(a, offset + i)).join("");
-  if (append) $("grid").insertAdjacentHTML("beforeend", html); else $("grid").innerHTML = html;
+  if (!append) {
+    $("gridNew").innerHTML = $("grid").innerHTML = "";
+    tiles = { gridNew: 0, grid: 0 };
+  }
+  // Each grid starts its own bento pattern, so both pack into full bands.
+  const split = splitNew(), html = { gridNew: "", grid: "" };
+  for (const a of rows) {
+    const g = split && isNew(a) ? "gridNew" : "grid";
+    html[g] += card(a, tiles[g]++);
+  }
+  for (const g in html) $(g).insertAdjacentHTML("beforeend", html[g]);
+  $("feed").dataset.sort = sort;
+  syncNewLine();
   offset += rows.length;
   $("more").hidden = !next;
   const empty = !append && rows.length === 0;
   $("empty").hidden = !empty;
-  $("grid").hidden = empty;
+  $("feed").hidden = empty;
   if (empty) {
     const filtered = $("q").value || $("source").value || $("days").value || unreadOnly;
     $("empty").textContent = sources.length === 0
@@ -587,7 +655,7 @@ async function pollStatus() {
     ? `Crawling ${s.sourcesDone}/${s.sourcesTotal} sources…`
     : s.lastRunAt ? `Last crawl ${ago(s.lastRunAt)}, ${s.lastRunNew} new · ${total} article${total === 1 ? "" : "s"} · auto-refresh every ${s.intervalMinutes} min` : "";
   if (wasRunning && !s.running) { await loadSources(); await loadArticles(); pollStatus(); }
-  else if (s.running) { if (offset === 0 || $("grid").children.length < PAGE) loadArticles(); }
+  else if (s.running) { if (offset === 0 || $("feed").querySelectorAll(".card").length < PAGE) loadArticles(); }
   wasRunning = s.running;
   setTimeout(pollStatus, s.running ? 2000 : 30000);
 }
@@ -646,8 +714,8 @@ function logClick(e) {
   if (link.classList.contains("card-link")) cardEl.classList.add("read");
   navigator.sendBeacon(`/api/articles/${id}/feedback`, new Blob([JSON.stringify({ click: true })], { type: "application/json" }));
 }
-$("grid").addEventListener("click", logClick);
-$("grid").addEventListener("auxclick", logClick);
+$("feed").addEventListener("click", logClick);
+$("feed").addEventListener("auxclick", logClick);
 
 let toastTimer, undoHide;
 const hideToast = () => { if ($("toast").matches(":popover-open")) $("toast").hidePopover(); };
@@ -693,16 +761,18 @@ async function removeCard(cardEl, record, message, undo) {
   const next = cardEl.nextSibling, parent = cardEl.parentNode;
   cardEl.remove();
   await record();
-  if (!$("grid").querySelector(".card")) await loadArticles();
+  syncNewLine();
+  if (!$("feed").querySelector(".card")) await loadArticles();
   toast(message, async () => {
     parent.insertBefore(cardEl, next?.parentNode === parent ? next : null);
-    $("grid").hidden = false;
+    $("feed").hidden = false;
     $("empty").hidden = true;
+    syncNewLine();
     await undo();
   });
 }
 
-$("grid").addEventListener("click", async (e) => {
+$("feed").addEventListener("click", async (e) => {
   const btn = e.target.closest(".actions button");
   if (!btn) return;
   const cardEl = btn.closest(".card");
