@@ -149,7 +149,11 @@ async function loadArticles(append = false) {
   if (dateSorted()) params.set("sort", sort);
   // A filter change or crawl reload can overlap a Load more; only the latest request may render.
   const seq = ++loadSeq;
-  const { total: t, rows, next: n, coldStart, reactions } = await (await fetch(`/api/articles?${params}`)).json();
+  const res = await fetch(`/api/articles?${params}`);
+  if (seq !== loadSeq) return;
+  // A ranked list's cursor expires after 30 idle minutes; rank again from the first page.
+  if (res.status === 410 && append) return loadArticles();
+  const { total: t, rows, next: n, coldStart, reactions } = await res.json();
   if (seq !== loadSeq) return;
   if (!append) offset = 0;
   total = t;
