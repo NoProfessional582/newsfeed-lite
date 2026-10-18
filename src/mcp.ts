@@ -188,7 +188,7 @@ const CHANGES = { readOnlyHint: false, destructiveHint: false, idempotentHint: t
 
 const id = z.number().int().positive().describe("Article id, from a list or search result");
 const limit = z.number().int().min(1).max(50).default(20).describe("How many to return (1-50)");
-const cursor = z.string().optional().describe("next_cursor from the previous page, to continue");
+const cursor = z.string().optional().describe("next_cursor from the previous page, to continue (if it has expired, start again without one)");
 const filters = {
   source_id: z.number().int().positive().optional().describe("Only this source (ids from news_list_sources)"),
   days: z.number().positive().max(365).optional().describe("Only articles from the last N days"),

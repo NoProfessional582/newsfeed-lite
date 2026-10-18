@@ -10,6 +10,7 @@ import { startScheduler } from "./scheduler.ts";
 import { embedPending } from "./embed.ts";
 import { forYou, profile } from "./recommend.ts";
 import { search } from "./search.ts";
+import { CursorExpiredError } from "./snapshots.ts";
 
 const app = new Hono();
 
@@ -60,10 +61,16 @@ app.get("/api/articles", async (c) => {
   const sort = c.req.query("sort") === "oldest" ? ("oldest" as const) : ("newest" as const);
   const view = c.req.query("view");
   const filter = { source, since, limit, unread: c.req.query("unread") === "1", saved: view === "saved" };
-  // A search ranks by relevance in every view; Saved only narrows it to saved articles.
-  if (q) return c.json(await search({ ...filter, q, after }));
-  if (view === "foryou") return c.json(forYou({ ...filter, after }));
-  return c.json(store.listArticles({ ...filter, sort, after: after ? store.parseKeyset(after) : undefined }));
+  try {
+    // A search ranks by relevance in every view; Saved only narrows it to saved articles.
+    if (q) return c.json(await search({ ...filter, q, after }));
+    if (view === "foryou") return c.json(forYou({ ...filter, after }));
+    return c.json(store.listArticles({ ...filter, sort, after: after ? store.parseKeyset(after) : undefined }));
+  } catch (e) {
+    // The ranking a ranked view's cursor pointed into is gone; the caller starts again from page one.
+    if (e instanceof CursorExpiredError) return c.json({ error: e.message, code: "cursor_expired" }, 410);
+    throw e;
+  }
 });
 
 app.get("/api/articles/:id", (c) => {

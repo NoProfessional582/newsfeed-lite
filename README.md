@@ -136,8 +136,10 @@ The weights are fixed by hand for now. They're constants at the top of `src/reco
   doesn't shift what comes next. Each row has `coverage`, the other sites' reports of its story.
 - With `view=foryou`, each row also has `score` and `reason`, and the response includes `coldStart`
   and `reactions`. With `q`, results are ranked by relevance in any view. Ranked results are computed
-  on the first page and later pages read that ranking for 30 minutes, so reacting while you scroll
-  doesn't reshuffle them.
+  on the first page and later pages read that ranking, so reacting while you scroll doesn't
+  reshuffle them. A ranking is kept until it goes unread for 30 minutes (or 24 newer ones push it
+  out); after that its cursor gets HTTP 410 with `code: "cursor_expired"`, and the caller starts
+  again without `after`. The UI does that by reloading from the first page.
 - `POST /api/articles/:id/feedback`: a JSON body with any of `rating` (-1, 0 or 1), `hidden`
   (boolean), `saved` (boolean) or `click: true`.
 - `GET /api/profile`: what the Profile page shows. `PATCH /api/reactions` with `url` and `rating`
