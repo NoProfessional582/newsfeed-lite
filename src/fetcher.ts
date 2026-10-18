@@ -249,11 +249,15 @@ async function readCapped(res: Response, maxBytes: number): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-/** One GET with redirects followed by hand so every hop is checked. No robots check. */
-async function rawGet(href: string, maxBytes: number, opts: GetOptions = {}): Promise<FetchResult> {
+/**
+ * One GET with redirects followed by hand so every hop is checked. With `robots`, each hop must
+ * also be allowed by its own origin's robots.txt, so a redirect can't lead past another site's rules.
+ */
+async function rawGet(href: string, maxBytes: number, opts: GetOptions = {}, robots = false): Promise<FetchResult> {
   let url = new URL(href);
   for (let hop = 0; hop <= LIMITS.maxRedirects; hop++) {
     assertPublic(url);
+    if (robots && !(await allowedByRobots(url))) throw new FetchError(`disallowed by robots.txt: ${url.href}`);
     checkHost(url.host);
     // Wait for the host first, then take a slot: a request queued behind a slow host must
     // neither hold a slot other hosts could use nor burn its timeout while waiting.
@@ -329,9 +333,7 @@ export async function get(
   href: string,
   opts: GetOptions = {},
 ): Promise<FetchResult> {
-  const url = new URL(href);
-  if (!(await allowedByRobots(url))) throw new FetchError(`disallowed by robots.txt: ${href}`);
-  const res = await rawGet(href, opts.maxBytes ?? LIMITS.pageBytes, opts);
+  const res = await rawGet(href, opts.maxBytes ?? LIMITS.pageBytes, opts, true);
   if (res.status >= 400) {
     throw new FetchError(`HTTP ${res.status} from ${href}`, res.status === 429 || res.status >= 500);
   }
