@@ -49,6 +49,11 @@ app.get("/api/articles", async (c) => {
   return c.json(store.listArticles({ ...filter, sort, after: after ? store.parseKeyset(after) : undefined }));
 });
 
+app.get("/api/articles/:id", (c) => {
+  const a = store.getArticle(Number(c.req.param("id")));
+  return a ? c.json(a) : c.json({ error: "No such article" }, 404);
+});
+
 app.post("/api/articles/:id/feedback", async (c) => {
   type Body = { rating?: unknown; hidden?: unknown; click?: unknown; saved?: unknown };
   const body = await c.req.json<Body>().catch((): Body => ({}));

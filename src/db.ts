@@ -328,6 +328,23 @@ export function candidateArticles(filter: ArticleFilter, opts: { leadsOnly?: boo
   ).map((r) => ({ ...r, embedding: fromBlob(r.embedding) }));
 }
 
+/** One article by id, hidden or not, with its story's other reports. */
+export function getArticle(id: number) {
+  const row = db
+    .prepare(`SELECT ${ARTICLE_COLUMNS}, coalesce(f.hidden, 0) AS hidden, a.dup_of ${ARTICLE_JOINS} WHERE a.id = ?`)
+    .get(id) as unknown as (ArticleRow & { hidden: number; dup_of: number | null }) | undefined;
+  if (!row) return undefined;
+  // Coverage hangs off the story's lead: the first report, which a later report points at.
+  const leadId = row.dup_of ?? row.id;
+  const [story] = withCoverage([{ id: leadId }], {});
+  const lead = row.dup_of
+    ? (db.prepare(`SELECT a.id, a.url, a.title, coalesce(s.title, s.url) AS source_title ${ARTICLE_JOINS} WHERE a.id = ?`)
+        .get(leadId) as unknown as Coverage | undefined)
+    : undefined;
+  const coverage = [...(lead ? [lead] : []), ...story.coverage].filter((c) => c.id !== row.id);
+  return { ...row, coverage };
+}
+
 /** Visible articles by id, for turning matches on a story's other reports into its lead. */
 export function articlesById(ids: number[]): ArticleRow[] {
   if (!ids.length) return [];
