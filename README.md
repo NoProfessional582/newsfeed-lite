@@ -156,44 +156,29 @@ The weights are fixed by hand for now. They're constants at the top of `src/reco
 ## AI agents (MCP)
 
 `src/mcp.ts` is an MCP server for local agent harnesses such as Hermes Agent, Claude Code or
-Codex. It's one server for two apps:
-
-- **`news_*`**: newsfeed-lite. List articles in the latest, For you or Saved views, search,
-  get one article, see sources and their health, and see what the ranking has learned. With
-  write access an agent can also rate, save, hide and mark articles read, start a crawl, and add,
-  pause or remove sources.
-- **`kinship_*`**: [Kinship](https://github.com/NoProfessional582/kinship)'s own tools
-  (contacts, notes, tasks, projects), relayed from its MCP endpoint as Kinship lists them. Its
-  Settings → Agents switch (read only or read and write) applies here too. If Kinship isn't
-  running, its tools are left out until it is.
-
-With both apps connected, an agent can do things like "save the top For you story about Proxmox
-and log it on my homelab project in Kinship".
+Codex. Its `news_*` tools list articles in the latest, For you or Saved views, search, get one
+article, see sources and their health, and see what the ranking has learned. With write access
+an agent can also rate, save, hide and mark articles read, start a crawl, and add, pause or
+remove sources.
 
 The MCP server runs over stdio and calls the newsfeed-lite server's API, so `npm start` must be
-running, and Kinship too for its tools. Both apps stay on 127.0.0.1. Kinship normally runs in
-Docker. Without Docker, it also runs natively with Node 24 and a PostgreSQL 18 of your own (see
-its README's Development section). For Hermes, add it to `~/.hermes/config.yaml` and run
-`/reload-mcp`:
+running. For Hermes, add it to `~/.hermes/config.yaml` and run `/reload-mcp`:
 
 ```yaml
 mcp_servers:
-  home:
+  newsfeed:
     command: "node"   # or the full path, e.g. "C:\\Program Files\\nodejs\\node.exe"
     args: ["/path/to/newsfeed-lite/src/mcp.ts"]   # on Windows: "C:\\path\\to\\newsfeed-lite\\src\\mcp.ts"
     env:
       NEWSFEED_MCP_ACCESS: "write"   # "read" offers only the news tools that look things up
-      # KINSHIP_MCP_URL: "off"       # leave Kinship out
 ```
 
-Hermes names the tools `mcp_home_news_search`, `mcp_home_kinship_search` and so on. If Hermes
-already connects to Kinship directly, remove that entry so its tools don't appear twice.
+Hermes names the tools `mcp_newsfeed_news_search` and so on.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `NEWSFEED_URL` | `http://127.0.0.1:<port>` | Where newsfeed-lite is running |
 | `NEWSFEED_MCP_ACCESS` | `write` | `read` turns off the news tools that change things |
-| `KINSHIP_MCP_URL` | `http://127.0.0.1:3000/api/mcp` | Kinship's MCP endpoint, or `off` |
 
 Article text comes from third-party sites, and the server tells agents to treat it as data, not
 instructions. `news_remove_source` deletes for good, and its description asks the agent to
@@ -237,6 +222,6 @@ src/images.ts     thumbnail download + crop     src/db.ts        node:sqlite sch
 src/embed.ts      local sentence embeddings     src/recommend.ts "For you" ranking, profile
 src/cluster.ts    same-story grouping           src/search.ts    semantic + keyword search
 src/snapshots.ts  stable paging of rankings     test/            node:test suites (npm test)
-src/mcp.ts        MCP server: news + Kinship
+src/mcp.ts        MCP server (news_* tools)
 public/index.html the UI                        data/            database, images, model (gitignored)
 ```
