@@ -46,8 +46,26 @@
   main { max-width: 1400px; margin: 0 auto; padding: 20px 16px 48px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 18px; }
   .card { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border);
-    border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); text-decoration: none; transition: transform .12s, border-color .12s; }
+    border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); transition: transform .12s, border-color .12s; }
   .card:hover { transform: translateY(-2px); border-color: var(--accent); }
+  .card-link { display: flex; flex-direction: column; flex: 1; text-decoration: none; }
+  .actions { display: flex; align-items: center; gap: 2px; padding: 0 10px 10px 16px; }
+  .reason { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .icon-btn { display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: none; color: var(--muted); cursor: pointer; }
+  .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+  .icon-btn svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .icon-btn[data-rate="1"][aria-pressed="true"] { color: var(--ok); }
+  .icon-btn[data-rate="1"][aria-pressed="true"] svg { fill: color-mix(in srgb, var(--ok) 20%, transparent); }
+  .icon-btn[data-rate="-1"][aria-pressed="true"] { color: var(--danger); }
+  .icon-btn[data-rate="-1"][aria-pressed="true"] svg { fill: color-mix(in srgb, var(--danger) 20%, transparent); }
+  .views { display: inline-flex; padding: 3px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); }
+  .views button { border: 0; background: none; padding: 5px 12px; border-radius: 7px; cursor: pointer; color: var(--muted); font-weight: 600; font-size: 14px; }
+  .views button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  .notice { margin: 0 0 16px; padding: 10px 14px; border-radius: 10px; background: var(--surface-2); color: var(--muted); font-size: 14px; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; gap: 12px; align-items: center;
+    padding: 10px 12px 10px 16px; border-radius: 10px; background: var(--text); color: var(--bg); box-shadow: var(--shadow); font-size: 14px; z-index: 10; }
+  .toast[hidden] { display: none; }
+  .toast button { border: 0; background: none; color: inherit; font-weight: 700; cursor: pointer; padding: 4px 6px; text-decoration: underline; }
   .thumb { aspect-ratio: 16 / 10; background: var(--surface-2); overflow: hidden; }
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .thumb.empty { display: grid; place-items: center; color: var(--muted); font-weight: 700; font-size: 28px; letter-spacing: .02em; }
@@ -92,6 +110,10 @@
       <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><path d="M8 9h16M8 15h16M8 21h10" stroke="white" stroke-width="3" stroke-linecap="round"/></svg>
       Newsfeed Lite
     </div>
+    <div class="views" role="group" aria-label="View">
+      <button id="viewLatest" data-view="latest" aria-pressed="true">Latest</button>
+      <button id="viewForYou" data-view="foryou" aria-pressed="false">For you</button>
+    </div>
     <div class="search"><input id="q" type="search" placeholder="Search headlines and previews" aria-label="Search"></div>
     <select id="source" aria-label="Filter by source"><option value="">All sources</option></select>
     <button class="btn" id="sourcesBtn">Sources</button>
@@ -101,6 +123,7 @@
 </header>
 
 <main>
+  <p class="notice" id="notice" hidden></p>
   <div class="grid" id="grid"></div>
   <div class="empty-state" id="empty" hidden></div>
   <div class="more"><button class="btn" id="more" hidden>Load more</button></div>
@@ -120,6 +143,8 @@
     <ul class="src-list" id="srcList"></ul>
   </div>
 </dialog>
+
+<div class="toast" id="toast" role="status" hidden><span id="toastText"></span><button id="toastUndo">Undo</button></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -147,23 +172,55 @@ function card(a) {
     ? `<div class="thumb"><img loading="lazy" src="${esc(img)}" alt="" referrerpolicy="no-referrer" onerror="this.parentNode.className='thumb empty';this.parentNode.textContent='${initial}'"></div>`
     : `<div class="thumb empty">${initial}</div>`;
   const when = a.published_at ? ago(a.published_at) : `added ${ago(a.fetched_at)}`;
-  return `<a class="card" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">
-    ${thumb}
-    <div class="body">
-      <div class="meta"><span class="src">${esc(a.source_title || host(a.url))}</span>${when ? `<span>·</span><span>${when}</span>` : ""}${a.author ? `<span>·</span><span>${esc(a.author)}</span>` : ""}</div>
-      <h2>${esc(a.title)}</h2>
-      ${a.excerpt ? `<p>${esc(a.excerpt)}</p>` : ""}
+  return `<article class="card" data-id="${a.id}">
+    <a class="card-link" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">
+      ${thumb}
+      <div class="body">
+        <div class="meta"><span class="src">${esc(a.source_title || host(a.url))}</span>${when ? `<span>·</span><span>${when}</span>` : ""}${a.author ? `<span>·</span><span>${esc(a.author)}</span>` : ""}</div>
+        <h2>${esc(a.title)}</h2>
+        ${a.excerpt ? `<p>${esc(a.excerpt)}</p>` : ""}
+      </div>
+    </a>
+    <div class="actions">
+      <span class="reason" title="${esc(a.reason)}">${esc(a.reason)}</span>
+      <button class="icon-btn" data-rate="1" aria-pressed="${a.rating === 1}" aria-label="More like this" title="More like this">${ICON.up}</button>
+      <button class="icon-btn" data-rate="-1" aria-pressed="${a.rating === -1}" aria-label="Less like this" title="Less like this">${ICON.down}</button>
+      <button class="icon-btn" data-hide aria-label="Hide" title="Hide">${ICON.hide}</button>
     </div>
-  </a>`;
+  </article>`;
 }
+
+const ICON = {
+  up: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg>`,
+  down: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/></svg>`,
+  hide: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.73 5.08A10.74 10.74 0 0 1 21.94 11.65a1 1 0 0 1 0 .7 10.75 10.75 0 0 1-1.44 2.49"/><path d="M14.08 14.16a3 3 0 0 1-4.24-4.24"/><path d="M17.48 17.5a10.75 10.75 0 0 1-15.42-5.15 1 1 0 0 1 0-.7 10.75 10.75 0 0 1 4.45-5.14"/><path d="m2 2 20 20"/></svg>`,
+};
+
+let view = "latest";
+try { if (localStorage.getItem("view") === "foryou") view = "foryou"; } catch {}
+
+function setView(v) {
+  view = v;
+  try { localStorage.setItem("view", v); } catch {}
+  for (const b of document.querySelectorAll(".views button")) b.setAttribute("aria-pressed", String(b.dataset.view === v));
+  loadArticles();
+}
+
+const feedback = (id, body) =>
+  fetch(`/api/articles/${id}/feedback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
 async function loadArticles(append = false) {
   if (!append) offset = 0;
-  const params = new URLSearchParams({ limit: PAGE, offset });
+  const params = new URLSearchParams({ limit: PAGE, offset, view });
   if ($("q").value.trim()) params.set("q", $("q").value.trim());
   if ($("source").value) params.set("source", $("source").value);
-  const { total: t, rows } = await (await fetch(`/api/articles?${params}`)).json();
+  const { total: t, rows, coldStart, reactions } = await (await fetch(`/api/articles?${params}`)).json();
   total = t;
+  $("notice").hidden = !coldStart;
+  if (coldStart) {
+    const need = 3 - reactions;
+    $("notice").textContent = `Rate ${need} more article${need === 1 ? "" : "s"} with 👍 or 👎 and For you will start ranking. Showing the latest for now.`;
+  }
   const html = rows.map(card).join("");
   if (append) $("grid").insertAdjacentHTML("beforeend", html); else $("grid").innerHTML = html;
   offset += rows.length;
@@ -212,6 +269,49 @@ let qTimer;
 $("q").addEventListener("input", () => { clearTimeout(qTimer); qTimer = setTimeout(() => loadArticles(), 250); });
 $("source").addEventListener("change", () => loadArticles());
 $("more").addEventListener("click", () => loadArticles(true));
+for (const b of document.querySelectorAll(".views button")) b.addEventListener("click", () => setView(b.dataset.view));
+for (const b of document.querySelectorAll(".views button")) b.setAttribute("aria-pressed", String(b.dataset.view === view));
+
+// Opening an article is a mild "interested" signal. A beacon survives the tab switching away.
+function logClick(e) {
+  const link = e.target.closest(".card-link");
+  if (!link || (e.type === "auxclick" && e.button !== 1)) return;
+  const id = link.closest(".card").dataset.id;
+  navigator.sendBeacon(`/api/articles/${id}/feedback`, new Blob([JSON.stringify({ click: true })], { type: "application/json" }));
+}
+$("grid").addEventListener("click", logClick);
+$("grid").addEventListener("auxclick", logClick);
+
+let toastTimer, undoHide;
+function toast(text, undo) {
+  $("toastText").textContent = text;
+  undoHide = undo;
+  $("toast").hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => ($("toast").hidden = true), 6000);
+}
+$("toastUndo").addEventListener("click", () => { $("toast").hidden = true; undoHide?.(); });
+
+$("grid").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".actions button");
+  if (!btn) return;
+  const cardEl = btn.closest(".card");
+  const id = cardEl.dataset.id;
+  if (btn.dataset.rate) {
+    const on = btn.getAttribute("aria-pressed") !== "true";
+    const rating = on ? Number(btn.dataset.rate) : 0;
+    for (const b of cardEl.querySelectorAll("[data-rate]")) b.setAttribute("aria-pressed", String(on && b === btn));
+    await feedback(id, { rating });
+  } else if ("hide" in btn.dataset) {
+    const next = cardEl.nextSibling, parent = cardEl.parentNode;
+    cardEl.remove();
+    await feedback(id, { hidden: true });
+    toast("Hidden. You'll see less like this.", async () => {
+      parent.insertBefore(cardEl, next);
+      await feedback(id, { hidden: false });
+    });
+  }
+});
 $("refresh").addEventListener("click", async () => {
   await fetch("/api/crawl", { method: "POST" });
   wasRunning = true;

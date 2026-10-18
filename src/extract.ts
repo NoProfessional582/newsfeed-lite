@@ -10,6 +10,7 @@ export interface Preview {
   imageUrl: string | null;
   author: string | null;
   publishedAt: string | null;
+  categories: string[];
 }
 
 const EXCERPT_MAX = 400;
@@ -68,6 +69,14 @@ function absolute(u: string | null | undefined, base: string): string | null {
   }
 }
 
+/** article:tag metas, for pages scraped without a feed. */
+function pageTags(document: Document): string[] {
+  const tags = [...document.querySelectorAll('meta[property="article:tag"]')]
+    .map((m) => m.getAttribute("content")?.trim().toLowerCase())
+    .filter((t): t is string => !!t && t.length <= 60);
+  return [...new Set(tags)].slice(0, 12);
+}
+
 /** First three substantial paragraphs of the readable article body. */
 function readableLead(document: Document): string | null {
   try {
@@ -101,6 +110,7 @@ export async function extractPreview(url: string, item?: FeedItem): Promise<Prev
       imageUrl: item.image,
       author: item.author,
       publishedAt: item.publishedAt,
+      categories: item.categories,
     };
   }
 
@@ -145,5 +155,6 @@ export async function extractPreview(url: string, item?: FeedItem): Promise<Prev
       item?.publishedAt ??
       safeIso(meta(document, "article:published_time", "datePublished", "date")) ??
       safeIso(document.querySelector("time[datetime]")?.getAttribute("datetime") ?? null),
+    categories: item?.categories.length ? item.categories : pageTags(document),
   };
 }

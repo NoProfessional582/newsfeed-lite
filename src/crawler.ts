@@ -6,6 +6,7 @@ import { parseFeed, type FeedItem } from "./feed.ts";
 import { get, LIMITS } from "./fetcher.ts";
 import { extractPreview } from "./extract.ts";
 import { saveThumbnail, deleteImages } from "./images.ts";
+import { embedPending } from "./embed.ts";
 
 export const status = {
   running: false,
@@ -42,6 +43,7 @@ async function ingest(source: Source, url: string, item?: FeedItem): Promise<boo
     image_url: preview.imageUrl,
     author: preview.author,
     published_at: preview.publishedAt,
+    categories: preview.categories.length ? JSON.stringify(preview.categories) : null,
   });
 }
 
@@ -97,6 +99,8 @@ export async function crawlAll(): Promise<boolean> {
       }),
     );
     await deleteImages(store.pruneArticles(config.retentionDays));
+    // Ranking just skips unembedded articles, so a model failure shouldn't fail the crawl.
+    await embedPending().catch((e) => console.error("[embed] failed:", message(e)));
   } finally {
     Object.assign(status, { running: false, lastRunAt: now(), lastRunNew: added });
     console.log(`[crawl] ${sources.length} sources, ${added} new articles`);

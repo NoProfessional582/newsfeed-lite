@@ -7,6 +7,8 @@ import * as store from "./db.ts";
 import { crawlAll, discoverSource, status } from "./crawler.ts";
 import { deleteImages } from "./images.ts";
 import { startScheduler } from "./scheduler.ts";
+import { embedPending } from "./embed.ts";
+import { forYou } from "./recommend.ts";
 
 const app = new Hono();
 
@@ -15,7 +17,22 @@ app.get("/api/articles", (c) => {
   const q = c.req.query("q")?.trim() || undefined;
   const limit = Math.min(Number(c.req.query("limit")) || 60, 200);
   const offset = Math.max(Number(c.req.query("offset")) || 0, 0);
-  return c.json(store.listArticles({ source, q, limit, offset }));
+  const query = { source, q, limit, offset };
+  return c.json(c.req.query("view") === "foryou" ? forYou(query) : store.listArticles(query));
+});
+
+app.post("/api/articles/:id/feedback", async (c) => {
+  type Body = { rating?: unknown; hidden?: unknown; click?: unknown };
+  const body = await c.req.json<Body>().catch((): Body => ({}));
+  const change: store.FeedbackChange = {};
+  if (body.rating === -1 || body.rating === 0 || body.rating === 1) change.rating = body.rating;
+  if (typeof body.hidden === "boolean") change.hidden = body.hidden;
+  if (body.click === true) change.click = true;
+  if (!Object.keys(change).length) return c.json({ error: "Nothing to record" }, 400);
+  if (!store.recordFeedback(Number(c.req.param("id")), change)) return c.json({ error: "No such article" }, 404);
+  // A reaction to an article the model hasn't reached yet gets its vector in the background.
+  void embedPending().catch((e) => console.error("[embed] failed:", e));
+  return c.body(null, 204);
 });
 
 app.get("/api/sources", (c) => c.json(store.listSources()));
@@ -84,3 +101,5 @@ serve({ fetch: app.fetch, port: config.port, hostname: "127.0.0.1" }, ({ port })
 });
 
 startScheduler();
+// Backfill vectors for articles stored before embeddings existed, or while the model was failing.
+void embedPending().catch((e) => console.error("[embed] failed:", e));

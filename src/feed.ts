@@ -7,6 +7,7 @@ export interface FeedItem {
   author: string | null;
   publishedAt: string | null; // ISO, or null when missing/unrepresentable
   image: string | null;
+  categories: string[];
 }
 
 export interface Feed {
@@ -79,6 +80,16 @@ function itemImage(item: Node, html: string | null): string | null {
   return firstImgSrc(html);
 }
 
+/** RSS <category>text</category> and Atom <category term="…" label="…"/>, deduped, lowercase. */
+function categories(v: unknown): string[] {
+  const out = new Set<string>();
+  for (const c of (v as (Node | string)[] | undefined) ?? []) {
+    const name = typeof c === "object" ? text(c["@label"]) ?? text(c["@term"]) ?? text(c) : text(c);
+    if (name && name.length <= 60) out.add(name.toLowerCase());
+  }
+  return [...out].slice(0, 12);
+}
+
 function atomLink(links: unknown): string | null {
   const list = (Array.isArray(links) ? links : [links]) as (Node | string)[];
   const alt = list.find((l) => typeof l === "object" && (!l["@rel"] || l["@rel"] === "alternate"));
@@ -144,6 +155,7 @@ export function parseFeed(xml: string, baseUrl: string): Feed {
         author,
         publishedAt: isoDate(item.pubDate ?? item.published ?? item["dc:date"] ?? item.updated),
         image: resolve(itemImage(item, contentHtml ?? summaryHtml)),
+        categories: categories(item.category),
       });
     } catch {
       continue;

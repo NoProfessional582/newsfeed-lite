@@ -39,6 +39,22 @@ headless run, for example from a Windows scheduled task, use `npm run crawl`.
   a sentence boundary.
 - **Dedup:** by canonical URL.
 
+## For you
+
+Each card has **👍 More like this**, **👎 Less like this** and **Hide**. Opening an article counts
+as a mild 👍. After three reactions, the **For you** view ranks articles by what you've reacted to.
+
+- **Embeddings:** each article's headline, preview and feed tags are turned into a vector by
+  `all-MiniLM-L6-v2`, using [transformers.js](https://github.com/huggingface/transformers.js) in the
+  same Node process. The ~23 MB model downloads once into `data/models/`. After that it loads from
+  disk and remote fetching is turned off, so nothing leaves the machine.
+- **Scoring:** an article scores by the weighted sentiment of its 8 nearest reactions, so separate
+  interests don't average each other out. The score adds a small source-affinity term and a recency
+  boost with a 3-day half-life. Every 6th slot goes to a fresh article the profile knows little
+  about, so the feed keeps learning. The caption on each card says why it's there.
+- **Persistence:** reactions live in a `feedback` table with their own copy of the article's text and
+  vector, so your profile survives the `retentionDays` pruning. Hidden articles drop out of both views.
+
 ## Config (`config.json`)
 
 | Key | Default | Meaning |
@@ -68,5 +84,6 @@ src/server.ts     Hono API + static UI          src/discover.ts  feed discovery,
 src/crawler.ts    crawl run orchestration       src/feed.ts      RSS 2.0 / RSS 1.0 / Atom parsing
 src/extract.ts    article page → preview        src/fetcher.ts   polite, capped, checked HTTP GET
 src/images.ts     thumbnail download + crop     src/db.ts        node:sqlite schema and queries
-public/index.html the UI                        data/            database + images (gitignored)
+src/embed.ts      local sentence embeddings     src/recommend.ts "For you" ranking
+public/index.html the UI                        data/            database, images, model (gitignored)
 ```
