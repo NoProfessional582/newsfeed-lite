@@ -105,10 +105,12 @@ export function looksLikeFeed(body: string): boolean {
 /** Parses RSS 2.0, RSS 1.0 (RDF) and Atom. Throws if the document isn't a feed. */
 export function parseFeed(xml: string, baseUrl: string): Feed {
   const doc = parser.parse(xml) as Node;
+  // Web links only: a feed can carry anything, and a javascript: or data: link would be stored and shown.
   const resolve = (u: string | null) => {
     if (!u) return null;
     try {
-      return new URL(u, baseUrl).href;
+      const r = new URL(u, baseUrl);
+      return r.protocol === "http:" || r.protocol === "https:" ? r.href : null;
     } catch {
       return null;
     }

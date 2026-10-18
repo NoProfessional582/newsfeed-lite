@@ -29,6 +29,23 @@ app.use("*", async (c, next) => {
     }
   }
   await next();
+  // The UI renders text and links taken from other sites' feeds. Scripts come only from our own
+  // files, so a hostile javascript: link or injected handler can't run even if one slips through.
+  c.header(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src https://fonts.gstatic.com",
+      "img-src 'self' data: https: http:",
+      "connect-src 'self'",
+      "object-src 'none'",
+      "base-uri 'none'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+    ].join("; "),
+  );
 });
 
 app.get("/api/articles", async (c) => {
