@@ -216,11 +216,41 @@ async function loadSources() {
       <div class="health ${h.tone}">${esc(h.text)}</div>
       ${s.last_error ? `<div class="src-err">${esc(s.last_error)}</div>` : ""}
       <div class="src-actions">
+        <button class="btn" data-log="${s.id}" aria-expanded="${openLogs.has(s.id)}" aria-controls="log-${s.id}">History</button>
         <button class="btn" data-toggle="${s.id}" data-enabled="${s.enabled}">${s.enabled ? "Pause" : "Resume"}</button>
         <button class="btn danger" data-del="${s.id}" aria-label="Remove ${esc(s.title || s.url)}">Remove</button>
       </div>
+      <div class="src-log" id="log-${s.id}" ${openLogs.has(s.id) ? "" : "hidden"}></div>
     </li>`;
   }).join("") : `<li class="hint">No sources yet.</li>`;
+  // The list was just rebuilt; refill any history that was open.
+  await Promise.all([...openLogs].filter((id) => sources.some((s) => s.id === id)).map(showLog));
+}
+
+// Sources whose crawl history is expanded, kept across re-renders of the list.
+const openLogs = new Set();
+
+async function showLog(id) {
+  const box = $(`log-${id}`);
+  if (!box) return;
+  box.hidden = false;
+  box.textContent = "Loading…";
+  try {
+    const r = await fetch(`/api/crawl-log?source=${id}&limit=20`);
+    if (!r.ok) throw new Error();
+    const runs = await r.json();
+    box.innerHTML = runs.length ? `<ul>${runs.map((l) => {
+      const what = l.outcome === "failed" ? "Failed"
+        : l.outcome === "unchanged" ? "Feed unchanged"
+        : `${l.new_articles} new of ${l.items}${l.failed_articles ? `, ${l.failed_articles} failed` : ""}`;
+      const tone = l.outcome === "failed" ? "bad" : l.failed_articles ? "warn" : "";
+      return `<li class="${tone}" title="${esc(new Date(l.at).toLocaleString())}">
+        <span class="log-when">${esc(ago(l.at))}</span><span class="log-what">${esc(what)}</span><span class="log-dur">${(l.duration_ms / 1000).toFixed(1)}s</span>
+        ${l.error ? `<span class="log-err">${esc(l.error)}</span>` : ""}</li>`;
+    }).join("")}</ul>` : `<p class="muted">No crawls logged yet.</p>`;
+  } catch {
+    box.textContent = "Couldn't load the crawl history.";
+  }
 }
 
 // A source is failing after 3 bad runs in a row, or 2 if it has never worked at all.
@@ -513,6 +543,14 @@ $("addForm").addEventListener("submit", async (e) => {
 $("srcList").addEventListener("click", async (e) => {
   const t = e.target.closest("button");
   if (!t) return;
+  if (t.dataset.log) {
+    const id = Number(t.dataset.log);
+    const open = !openLogs.has(id);
+    t.setAttribute("aria-expanded", String(open));
+    if (open) { openLogs.add(id); await showLog(id); }
+    else { openLogs.delete(id); $(`log-${id}`).hidden = true; }
+    return;
+  }
   if (t.dataset.del) {
     const s = sources.find((x) => String(x.id) === t.dataset.del);
     const name = s ? s.title || host(s.url) : "this source";

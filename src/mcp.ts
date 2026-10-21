@@ -144,6 +144,18 @@ interface ApiSource {
   article_count: number;
 }
 
+interface ApiCrawlRun {
+  source_id: number;
+  source_title: string;
+  at: string;
+  outcome: "ok" | "unchanged" | "failed";
+  items: number;
+  new_articles: number;
+  failed_articles: number;
+  duration_ms: number;
+  error: string | null;
+}
+
 interface ApiProfile {
   counts: Record<string, number>;
   minReactions: number;
@@ -276,6 +288,35 @@ const newsTools = [
         // The title, a discovered feed URL and crawl errors can all quote the site.
         ...thirdParty({ title: s.title, feed: s.feed_url !== s.url ? s.feed_url : null, last_error: s.last_error }),
       })),
+  }),
+  tool({
+    name: "crawl_log",
+    title: "Crawl history",
+    description:
+      "Recent crawl runs per source, newest first: whether each worked, how many articles were new or failed, " +
+      "and the error. `unchanged` means the feed hadn't changed since the last run.",
+    input: z.object({
+      source_id: z.number().int().positive().optional().describe("Only this source (ids from news_list_sources)"),
+      problems_only: z.boolean().optional().describe("Only runs that failed or lost some articles"),
+      limit,
+    }),
+    annotations: LOOKS,
+    run: async (a) => {
+      const p = new URLSearchParams({ limit: String(a.limit) });
+      if (a.source_id) p.set("source", String(a.source_id));
+      if (a.problems_only) p.set("problems", "1");
+      return (await api<ApiCrawlRun[]>(`/api/crawl-log?${p}`)).map((l) => ({
+        source_id: l.source_id,
+        at: l.at,
+        outcome: l.outcome,
+        items: l.items,
+        new_articles: l.new_articles,
+        failed_articles: l.failed_articles,
+        seconds: Math.round(l.duration_ms / 100) / 10,
+        // Source titles and errors can quote the site.
+        ...thirdParty({ source: l.source_title, error: l.error }),
+      }));
+    },
   }),
   tool({
     name: "crawl_status",

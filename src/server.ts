@@ -153,6 +153,20 @@ app.delete("/api/sources/:id", async (c) => {
   return c.body(null, 204);
 });
 
+// Recent per-source crawl runs, newest first. `source` narrows to one source, `problems=1` to runs
+// that failed or lost some articles.
+app.get("/api/crawl-log", (c) => {
+  let limit: number;
+  try {
+    limit = parseLimit(c.req.query("limit"));
+  } catch (e) {
+    if (e instanceof ParamError) return c.json({ error: e.message }, 400);
+    throw e;
+  }
+  const source = Number(c.req.query("source")) || undefined;
+  return c.json(store.listCrawlLog({ source, problems: c.req.query("problems") === "1", limit }));
+});
+
 app.post("/api/crawl", (c) => {
   const started = !status.running;
   if (started) void crawlAll().catch((e) => console.error("[crawl] failed:", e));
