@@ -44,6 +44,12 @@ headless run, for example from a Windows scheduled task, use `npm run crawl`.
 - **Source health:** Sources shows each source's state. One that fails 3 runs in a row (2 if it has
   never worked) is marked failing, the Sources button shows a count, and **Remove them** clears every
   failing source at once.
+- **Crawl history:** every run logs one line per source to the console (`[crawl] ok …` or
+  `[crawl] FAIL …`) and a row to the `crawl_log` table: the outcome (`ok`, `unchanged` for a 304, or
+  `failed`), how many items it looked at, how many were new or failed, how long it took, and the
+  error. **History** on a source in Sources shows its last 20 runs. A run where only some articles
+  failed is shown in amber but doesn't count against the source's health. Rows are pruned after
+  `retentionDays`.
 
 ## Reading
 
@@ -144,6 +150,9 @@ The weights are fixed by hand for now. They're constants at the top of `src/reco
   again without `after`. The UI does that by reloading from the first page.
 - `POST /api/articles/:id/feedback`: a JSON body with any of `rating` (-1, 0 or 1), `hidden`
   (boolean), `saved` (boolean) or `click: true`.
+- `GET /api/crawl-log`: recent crawl runs, newest first, each with `source_id`, `source_title`, `at`,
+  `outcome`, `items`, `new_articles`, `failed_articles`, `duration_ms` and `error`. Takes `source`,
+  `problems=1` (only runs that failed or lost some articles) and `limit` (as for articles).
 - `GET /api/profile`: what the Profile page shows. `PATCH /api/reactions` with `url` and `rating`
   or `hidden` changes one reaction. `POST /api/profile/reset` forgets every reaction except saves.
 
@@ -161,7 +170,7 @@ The weights are fixed by hand for now. They're constants at the top of `src/reco
 
 `src/mcp.ts` is an MCP server for local agent harnesses such as Hermes Agent, Claude Code or
 Codex. Its `news_*` tools list articles in the latest, For you or Saved views, search, get one
-article, see sources and their health, and see what the ranking has learned. With write access
+article, see sources, their health and crawl history, and see what the ranking has learned. With write access
 (`NEWSFEED_MCP_ACCESS=write`, off by default) an agent can also rate, save, hide and mark
 articles read, start a crawl, and add, pause or remove sources.
 

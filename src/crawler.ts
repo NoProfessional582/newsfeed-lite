@@ -62,8 +62,25 @@ async function ingest(source: Source, url: string, item?: FeedItem): Promise<boo
   return added;
 }
 
+/** Logs one source's run to the crawl log, its health and the console. */
+function finish(source: Source, started: number, run: Omit<store.CrawlRun, "duration_ms">): void {
+  const duration_ms = performance.now() - started;
+  store.recordSourceRun(source.id, { ...run, duration_ms });
+  const name = source.title ?? source.url;
+  const secs = `${(duration_ms / 1000).toFixed(1)}s`;
+  if (run.outcome === "failed") {
+    console.warn(`[crawl] FAIL ${name}: ${run.error} (${secs})`);
+  } else if (run.outcome === "unchanged") {
+    console.log(`[crawl] ok   ${name}: feed unchanged (${secs})`);
+  } else {
+    const failed = run.failed_articles ? `, ${run.failed_articles} failed` : "";
+    console.log(`[crawl] ok   ${name}: ${run.new_articles} new of ${run.items}${failed} (${secs})`);
+  }
+}
+
 /** Crawls one source. Returns the number of new articles. Errors are recorded on the source. */
 export async function crawlSource(source: Source): Promise<number> {
+  const started = performance.now();
   try {
     if (!source.mode) source = await discoverSource(source);
     const max = config.maxArticlesPerSource;
@@ -79,7 +96,7 @@ export async function crawlSource(source: Source): Promise<number> {
       const res = await get(source.feed_url, { maxBytes: LIMITS.feedBytes, headers });
       if (res.status === 304) {
         store.updateSource(source.id, { last_crawled_at: now(), last_error: null });
-        store.recordSourceRun(source.id, true);
+        finish(source, started, { outcome: "unchanged", items: 0, new_articles: 0, failed_articles: 0, error: null });
         return 0;
       }
       validators = { etag: res.header("etag"), last_modified: res.header("last-modified") };
@@ -100,14 +117,22 @@ export async function crawlSource(source: Source): Promise<number> {
     const rejected = results.filter((r) => r.status === "rejected");
     const failed = rejected.length;
     const allFailed = failed > 0 && !added && failed === results.length;
+    const error = allFailed ? `all ${failed} articles failed: ${message(rejected[0].reason)}` : null;
     store.updateSource(source.id, {
       last_crawled_at: now(),
-      last_error: allFailed ? `all ${failed} articles failed: ${message(rejected[0].reason)}` : null,
+      last_error: error,
       // Keep the validators only if every item was dealt with. Items skipped over a request budget
       // or rate limit must be retried next run, and a 304 would hide them.
       ...(failed ? { etag: null, last_modified: null } : validators),
     });
-    store.recordSourceRun(source.id, !allFailed);
+    finish(source, started, {
+      outcome: allFailed ? "failed" : "ok",
+      items: results.length,
+      new_articles: added,
+      failed_articles: failed,
+      // A partly failed run still says why, without marking the source unhealthy.
+      error: error ?? (failed ? `${failed} of ${results.length} articles failed: ${message(rejected[0].reason)}` : null),
+    });
     return added;
   } catch (e) {
     // A rate limit, outage or timeout says nothing about the feed, so keep it. Anything else
@@ -118,7 +143,7 @@ export async function crawlSource(source: Source): Promise<number> {
       last_error: message(e),
       ...(keep ? {} : { mode: null, feed_url: null, etag: null, last_modified: null }),
     });
-    store.recordSourceRun(source.id, false);
+    finish(source, started, { outcome: "failed", items: 0, new_articles: 0, failed_articles: 0, error: message(e) });
     return 0;
   }
 }

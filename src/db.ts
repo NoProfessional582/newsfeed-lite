@@ -107,6 +107,20 @@ db.exec(`
     seen_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
   INSERT OR IGNORE INTO seen_urls (url, source_id) SELECT url, source_id FROM articles;
+
+  -- One row per source per crawl run. Pruned after retentionDays, like articles.
+  CREATE TABLE IF NOT EXISTS crawl_log (
+    id              INTEGER PRIMARY KEY,
+    source_id       INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    outcome         TEXT NOT NULL CHECK (outcome IN ('ok', 'unchanged', 'failed')),
+    items           INTEGER NOT NULL DEFAULT 0,
+    new_articles    INTEGER NOT NULL DEFAULT 0,
+    failed_articles INTEGER NOT NULL DEFAULT 0,
+    duration_ms     INTEGER NOT NULL,
+    error           TEXT
+  );
+  CREATE INDEX IF NOT EXISTS crawl_log_source ON crawl_log (source_id, at DESC);
 `);
 
 // Columns added after the first release. `backfill` runs once, right after the column is added.
@@ -162,13 +176,50 @@ export function updateSource(id: number, fields: Partial<Omit<Source, "id">>): v
   db.prepare(`UPDATE sources SET ${sets} WHERE id = ?`).run(...values, id);
 }
 
-/** Records the outcome of a crawl run for a source's health. */
-export function recordSourceRun(id: number, ok: boolean): void {
+/** What one crawl run did for one source. `unchanged` is a feed that answered 304. */
+export interface CrawlRun {
+  outcome: "ok" | "unchanged" | "failed";
+  /** Feed items or page links considered. */
+  items: number;
+  new_articles: number;
+  failed_articles: number;
+  duration_ms: number;
+  error: string | null;
+}
+
+export type CrawlLogRow = CrawlRun & { id: number; source_id: number; at: string; source_title: string };
+
+/** Records the outcome of a crawl run in the crawl log and the source's health. */
+export function recordSourceRun(id: number, run: CrawlRun): void {
   db.prepare(
-    ok
+    `INSERT INTO crawl_log (source_id, outcome, items, new_articles, failed_articles, duration_ms, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, run.outcome, run.items, run.new_articles, run.failed_articles, Math.round(run.duration_ms), run.error);
+  db.prepare(
+    run.outcome !== "failed"
       ? `UPDATE sources SET last_ok_at = ${NOW}, fail_streak = 0 WHERE id = ?`
       : `UPDATE sources SET fail_streak = fail_streak + 1 WHERE id = ?`,
   ).run(id);
+}
+
+/** Recent crawl runs, newest first, for one source or all of them. `problems` keeps failed runs
+ *  and runs where some articles failed. */
+export function listCrawlLog(opts: { source?: number; problems?: boolean; limit: number }): CrawlLogRow[] {
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (opts.source) {
+    where.push(`l.source_id = ?`);
+    params.push(opts.source);
+  }
+  if (opts.problems) where.push(`(l.outcome = 'failed' OR l.failed_articles > 0)`);
+  return db
+    .prepare(
+      `SELECT l.*, coalesce(s.title, s.url) AS source_title
+       FROM crawl_log l JOIN sources s ON s.id = l.source_id
+       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY l.at DESC, l.id DESC LIMIT ?`,
+    )
+    .all(...params, opts.limit) as unknown as CrawlLogRow[];
 }
 
 export function deleteSource(id: number): string[] {
@@ -526,5 +577,6 @@ export function pruneArticles(retentionDays: number): string[] {
   db.prepare(`DELETE FROM articles WHERE ${where}`).run(cutoff);
   // A kept article was fetched after the cutoff, so its own URLs were seen after it too.
   db.prepare(`DELETE FROM seen_urls WHERE seen_at < ?`).run(cutoff);
+  db.prepare(`DELETE FROM crawl_log WHERE at < ?`).run(cutoff);
   return images;
 }
